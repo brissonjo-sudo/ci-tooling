@@ -5,14 +5,22 @@ dépôts de `brissonjo-sudo`.
 
 À chaque ouverture ou mise à jour d'une PR, un commentaire unique est publié
 puis mis à jour à chaque push. Il contient les contrôles objectifs configurés
-pour le dépôt et une relecture du diff par un modèle Mistral.
+pour le dépôt et une relecture du diff.
+
+La relecture se fait à deux voix : **un modèle relit, un modèle d'un autre
+fournisseur vérifie**. Chaque constat doit citer une ligne ajoutée par le diff,
+et le vérificateur n'a qu'une question à trancher, celle de savoir si le diff
+démontre ce constat. Ce qu'il rejette est replié dans un bloc dépliable plutôt
+que publié comme un problème.
 
 ## Équiper un dépôt
 
 Deux gestes, une seule fois par dépôt.
 
-**1. Ajouter le secret.** Dans le dépôt à équiper, `Settings` → `Secrets and
-variables` → `Actions` → `New repository secret`, nommé `MISTRAL_API_KEY`.
+**1. Ajouter les clés.** Dans le dépôt à équiper, `Settings` → `Secrets and
+variables` → `Actions` → `New repository secret`. Deux secrets possibles,
+`GEMINI_API_KEY` et `MISTRAL_API_KEY`. Au moins un est nécessaire ; avec les
+deux, la vérification croisée a lieu.
 
 **2. Créer `.github/workflows/auto-review.yml`** avec exactement ceci :
 
@@ -60,7 +68,8 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 | `protected_files` | `[]` | Chemins, relatifs à la racine du dépôt, dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md`. Contrôle purement déterministe : le modèle n'en est pas informé. |
 | `max_diff_chars` | `80000` | Taille du diff envoyée au modèle, au-delà il est tronqué. |
-| `model` | `mistral-medium-latest` | Modèle demandé en premier. |
+| `providers` | `["gemini", "mistral"]` | Ordre des fournisseurs. Le premier qui répond relit, le suivant vérifie. |
+| `model` | `""` | Modèle demandé en premier au relecteur. |
 | `rules` | `""` | Règles en ligne, alternative à `auto-review.md`. |
 | `rules_file` | `.github/auto-review.md` | Autre emplacement pour les règles. |
 
@@ -103,22 +112,21 @@ sélectionne le script. Épingler les deux au même SHA fige l'ensemble.
 
 ## Choix du modèle
 
-Le modèle demandé est toujours essayé en premier, puis les replis, du plus
-capable au plus modeste : `ministral-14b-latest`, `mistral-small-latest`,
-`ministral-8b-latest`. Un `403` ou un `404` passe au suivant sans attente, un
-`429` déclenche deux nouvelles tentatives en respectant l'en-tête `Retry-After`.
+Le modèle demandé est toujours essayé en premier, puis les replis du
+fournisseur, du plus capable au plus modeste. Un `403` ou un `404` passe au
+suivant sans attente, un `429` déclenche deux nouvelles tentatives en
+respectant l'en-tête `Retry-After`. Si un fournisseur échoue entièrement, le
+suivant prend la relecture.
 
-Relevé en conditions réelles sur un plan gratuit Mistral :
+Relevé en conditions réelles sur les paliers gratuits :
 
-| Modèle | Résultat |
+| Fournisseur | Constat |
 | --- | --- |
-| `mistral-large` | `403`, absent de l'offre |
-| `mistral-medium`, `mistral-small` | `429` dès qu'un diff dépasse quelques milliers de lignes |
-| `ministral-14b` | répond, relecture correcte |
-| `ministral-8b` | répond, relecture plus approximative |
+| Gemini | 250 000 tokens par minute, largement au-dessus d'un diff de PR |
+| Mistral | 20 000 tokens par minute sur `medium` et `small`, d'où des `429` fréquents ; `mistral-large` répond `403`, absent de l'offre gratuite |
 
-`mistral-medium-latest` reste le défaut : il devient utilisable dès le passage
-en pay-as-you-go, sans toucher au code. Son refus coûte environ 25 secondes.
+Les deux fournisseurs exposent la même interface `/chat/completions`, ce qui
+permet de les traiter avec le même code.
 
 ## Ce que la relecture ne fait pas
 
@@ -128,10 +136,20 @@ déterministe affiché deux lignes plus haut dans le même commentaire annonçai
 zéro occurrence. Lui interdire dans le prompt de contredire les contrôles n'a
 rien changé.
 
-D'où une règle de conception : **ce qu'un contrôle déterministe sait faire ne
-doit pas être demandé au modèle, ni même porté à sa connaissance**. Le comptage
-des cadratins n'apparaît donc que dans le commentaire publié, jamais dans le
-message envoyé au modèle. Il a déjà signalé des variables inutilisées qui servaient,
+Trois garde-fous en découlent, du plus fiable au moins fiable.
+
+1. **Ce qu'un contrôle déterministe sait faire n'est pas demandé au modèle, ni
+   même porté à sa connaissance.** Le comptage des cadratins n'apparaît que
+   dans le commentaire publié.
+2. **Un constat visant un fichier absent de la PR est écarté sans discussion.**
+   Filtre déterministe, aucun modèle n'intervient.
+3. **Un second fournisseur vérifie chaque constat restant.** Vérifier est plus
+   simple que relire, et deux fournisseurs indépendants ne se trompent pas au
+   même endroit.
+
+Le verdict lui-même n'est plus demandé au modèle : il est calculé à partir des
+constats qui survivent. Un modèle avait rendu « À CORRIGER » alors qu'il
+n'énonçait qu'une question. Il a déjà signalé des variables inutilisées qui servaient,
 et demandé une chose puis son contraire d'un run à l'autre. C'est une aide à la
 relecture, pas une validation. Les contrôles objectifs, eux, sont déterministes
 et fiables.

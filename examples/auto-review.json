@@ -4,5 +4,5 @@
   ],
   "forbid_em_dash": false,
   "max_diff_chars": 80000,
-  "model": "mistral-medium-latest"
+  "providers": ["gemini", "mistral"]
 }
