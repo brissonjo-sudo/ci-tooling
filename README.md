@@ -26,8 +26,15 @@ on:
 jobs:
   review:
     uses: brissonjo-sudo/ci-tooling/.github/workflows/auto-review.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
     secrets: inherit
 ```
+
+Le bloc `permissions` n'est pas facultatif : un workflow appelé ne peut que
+réduire les droits de l'appelant, jamais les élargir. Sans lui, le run échoue
+en `startup_failure` sans message.
 
 C'est tout. Le script vit ici, une correction profite immédiatement à tous les
 dépôts équipés.
@@ -83,6 +90,9 @@ plus strict :
 jobs:
   review:
     uses: brissonjo-sudo/ci-tooling/.github/workflows/auto-review.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
     secrets: inherit
     with:
       tooling-ref: 8f3c1d2e4b5a6978c0d1e2f3a4b5c6d7e8f90123

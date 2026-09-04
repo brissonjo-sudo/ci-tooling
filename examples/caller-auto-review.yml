@@ -9,4 +9,9 @@ on:
 jobs:
   review:
     uses: brissonjo-sudo/ci-tooling/.github/workflows/auto-review.yml@main
+    # Un workflow appele ne peut pas elargir les droits de l appelant : c est
+    # ici qu ils sont accordes, et le workflow central ne fait que les reduire.
+    permissions:
+      contents: read
+      pull-requests: write
     secrets: inherit
