@@ -96,6 +96,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 DEFAULT_PROVIDER_ORDER = ["gemini", "mistral"]
 
 RETRY_DELAYS = (5, 20)
+# Les modeles de raisonnement consomment leur budget de jetons avant
+# d'ecrire la reponse : trop bas, ils rendent un message sans contenu.
+REVIEW_MAX_TOKENS = 4000
 DEFAULT_MAX_DIFF_CHARS = 80_000
 DASH = "—"  # tiret cadratin, en echappement pour rester reperable
 
@@ -456,7 +459,7 @@ class Provider:
         return ([requested] if requested else []) + fallbacks
 
     def ask_json(self, model: str, system: str, user: str,
-                 max_tokens: int = 1600) -> tuple[dict | None, str]:
+                 max_tokens: int = REVIEW_MAX_TOKENS) -> tuple[dict | None, str]:
         """Un appel avec retries. Retourne (objet JSON, derniere erreur)."""
         payload = {
             "model": model,
@@ -473,11 +476,20 @@ class Provider:
             status, body, headers = http("POST", f"{self.base}/chat/completions",
                                          self.headers, payload, timeout=120)
             if status < 300:
-                content = json.loads(body)["choices"][0]["message"]["content"]
+                # Un 200 ne garantit pas un contenu : un modele de raisonnement
+                # qui epuise son budget de jetons, ou dont la reponse est
+                # filtree, renvoie un message sans cle "content".
+                try:
+                    choice = (json.loads(body).get("choices") or [{}])[0]
+                except (ValueError, IndexError, AttributeError, TypeError):
+                    choice = {}
+                content = (choice.get("message") or {}).get("content") or ""
                 parsed = extract_json(content)
                 if parsed is not None:
                     return parsed, ""
-                last = f"{model}: reponse illisible, JSON attendu"
+                reason = choice.get("finish_reason") or "non precisee"
+                last = (f"{model}: reponse inexploitable, JSON attendu "
+                        f"(finish_reason={reason})")
                 print(f"  {last}", file=sys.stderr)
                 return None, last
             last = f"{model}: HTTP {status}: {body[:200]}"
@@ -494,7 +506,7 @@ class Provider:
         return None, last
 
     def run(self, system: str, user: str, requested: str = "",
-            max_tokens: int = 1600) -> tuple[dict | None, str, list[str]]:
+            max_tokens: int = REVIEW_MAX_TOKENS) -> tuple[dict | None, str, list[str]]:
         """Essaie les modeles jusqu'a une reponse JSON.
 
         Retourne (objet, identifiant du modele retenu, erreurs rencontrees).
@@ -723,7 +735,15 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
     errors: list[str] = []
     for provider in providers:
         print(f"Relecture par {provider.name}...")
-        review, reviewer, errs = provider.run(cfg.review_prompt(), user, requested)
+        try:
+            review, reviewer, errs = provider.run(cfg.review_prompt(), user,
+                                                  requested)
+        except Exception as e:  # noqa: BLE001
+            # Un fournisseur qui casse ne doit pas emporter le job : le
+            # commentaire reste publie, avec les controles deterministes.
+            errors.append(f"{provider.name}: {type(e).__name__}: {e}")
+            print(f"  {errors[-1]}", file=sys.stderr)
+            continue
         errors.extend(errs)
         if review is not None:
             out["review"], out["reviewer"] = review, reviewer
@@ -741,10 +761,14 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
     if findings and others:
         checker = others[0]
         print(f"Verification par {checker.name}...")
-        payload, verifier, _ = checker.run(
-            VERIFY_PROMPT,
-            f"Constats a verifier :\n{numbered_findings(findings)}\n\n"
-            f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```")
+        try:
+            payload, verifier, _ = checker.run(
+                VERIFY_PROMPT,
+                f"Constats a verifier :\n{numbered_findings(findings)}\n\n"
+                f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```")
+        except Exception as e:  # noqa: BLE001
+            payload, verifier = None, ""
+            print(f"  {type(e).__name__}: {e}", file=sys.stderr)
         if payload is not None:
             out["findings"], out["rejected"] = apply_verdicts(findings, payload)
             out["verifier"] = verifier

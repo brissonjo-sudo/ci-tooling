@@ -348,7 +348,35 @@ def test_end_to_end() -> None:
             check("controles publies malgre l'echec", "**3**" in out)
             print("relecture illisible OK")
 
-            # 6. DRY_RUN : rien n'est publie.
+            # 6. Reponse 200 sans cle "content" : le cas qui faisait planter le
+            #    job. Un modele de raisonnement a bout de jetons repond ainsi.
+            def no_content(data, sent):
+                return 200, json.dumps({"choices": [{
+                    "finish_reason": "length", "message": {"role": "assistant"}}]}), {}
+            a.http = make_transport([], no_content, json_reply(REVIEW_OK))
+            rc, out = run_main(tmp)
+            check("pas de plantage", rc == 0, rc)
+            check("bascule sur le suivant", "mistral/" in out, out[:400])
+            print("reponse sans contenu OK")
+
+            # 6 bis. Corps illisible ou structure inattendue : meme exigence.
+            for body in ("pas du json", '{"choices": []}', '{"autre": 1}'):
+                a.http = make_transport(
+                    [], lambda d, s, b=body: (200, b, {}), json_reply(REVIEW_OK))
+                rc, out = run_main(tmp)
+                check(f"corps {body[:15]} tolere", rc == 0, (body, rc))
+            print("corps de reponse inattendus OK")
+
+            # 6 ter. Un fournisseur qui leve une exception n'emporte pas le job.
+            def boom(data, sent):
+                raise RuntimeError("panne fournisseur")
+            a.http = make_transport([], boom, json_reply(REVIEW_OK))
+            rc, out = run_main(tmp)
+            check("exception absorbee", rc == 0, rc)
+            check("relais pris", "mistral/" in out, out[:400])
+            print("exception fournisseur OK")
+
+            # 7. DRY_RUN : rien n'est publie.
             calls = []
             a.http = make_transport(calls, json_reply(REVIEW_OK),
                                     json_reply(VERIFY_OK))
@@ -361,7 +389,7 @@ def test_end_to_end() -> None:
                           for m, u, _ in calls), calls)
             print("mode DRY_RUN OK")
 
-            # 7. Aucune cle : succes silencieux, aucun appel, rien publie.
+            # 8. Aucune cle : succes silencieux, aucun appel, rien publie.
             os.environ.pop("GEMINI_API_KEY")
             os.environ.pop("MISTRAL_API_KEY")
             calls = []
