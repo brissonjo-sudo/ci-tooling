@@ -361,12 +361,15 @@ def test_end_to_end() -> None:
                           for m, u, _ in calls), calls)
             print("mode DRY_RUN OK")
 
-            # 7. Aucune cle : sortie 2, aucun appel.
+            # 7. Aucune cle : succes silencieux, aucun appel, rien publie.
             os.environ.pop("GEMINI_API_KEY")
             os.environ.pop("MISTRAL_API_KEY")
-            a.http = make_transport([], None, None)
+            calls = []
+            a.http = make_transport(calls, None, None)
             rc, out = run_main(tmp)
-            check("code retour", rc == 2, rc)
+            check("succes silencieux", rc == 0, rc)
+            check("aucun appel", calls == [], calls)
+            check("message explicite", "relecture ignoree" in out, out)
             print("aucune cle OK")
     finally:
         a.http, a.time.sleep = original_http, original_sleep

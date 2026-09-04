@@ -46,9 +46,10 @@ Variables d'environnement :
   CONFIG_DIR          racine du depot appelant, defaut le repertoire courant
   DRY_RUN=1           affiche le commentaire sans le poster
 
-Au moins une cle de fournisseur est necessaire. Avec deux, la verification a
-lieu ; avec une seule, la relecture est publiee telle quelle et le commentaire
-le signale.
+Sans aucune cle, le script sort en succes sans rien publier : un depot equipe
+mais pas encore configure ne doit pas afficher d'echec. Avec une cle, la
+relecture est publiee telle quelle et le commentaire signale l'absence de
+verification. Avec deux, la verification croisee a lieu.
 
 Aucune dependance hors bibliotheque standard.
 """
@@ -769,10 +770,16 @@ def main() -> int:
 
     providers = build_providers(cfg.provider_order)
     if not providers:
-        needed = ", ".join(PROVIDERS[p]["env"] for p in cfg.provider_order)
-        print(f"Aucune cle de fournisseur. Attendu l'une de : {needed}",
-              file=sys.stderr)
-        return 2
+        # Absence de cle : le depot est equipe mais pas encore configure.
+        # C'est un cas normal, pas une erreur : le job sort en succes sans
+        # rien publier, et la relecture demarrera d'elle-meme le jour ou une
+        # cle sera ajoutee. Echouer ici afficherait une croix rouge sur toutes
+        # les PR d'un depot qui n'a rien demande.
+        needed = " ou ".join(PROVIDERS[p]["env"] for p in cfg.provider_order)
+        print(f"Aucune cle de fournisseur ({needed}) : relecture ignoree. "
+              "Ajouter l'un de ces secrets dans les reglages du depot pour "
+              "l'activer.")
+        return 0
     print("Fournisseurs disponibles : " + ", ".join(p.name for p in providers))
 
     pr = get_pr(repo, pr_number, token)

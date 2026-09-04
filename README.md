@@ -19,8 +19,12 @@ Deux gestes, une seule fois par dépôt.
 
 **1. Ajouter les clés.** Dans le dépôt à équiper, `Settings` → `Secrets and
 variables` → `Actions` → `New repository secret`. Deux secrets possibles,
-`GEMINI_API_KEY` et `MISTRAL_API_KEY`. Au moins un est nécessaire ; avec les
-deux, la vérification croisée a lieu.
+`GEMINI_API_KEY` et `MISTRAL_API_KEY`. Avec un seul, la relecture a lieu sans
+vérification croisée ; avec les deux, elle est vérifiée.
+
+Un dépôt sans aucune clé n'échoue pas : le job sort en succès sans rien
+publier, et la relecture démarre d'elle-même le jour où une clé est ajoutée.
+L'ordre des deux gestes est donc libre.
 
 **2. Créer `.github/workflows/auto-review.yml`** avec exactement ceci :
 
