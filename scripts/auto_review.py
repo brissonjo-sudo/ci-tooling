@@ -622,10 +622,22 @@ def render_findings(findings: list[dict]) -> list[str]:
     return lines
 
 
-def footer(reviewer: str, verifier: str) -> str:
+# Etats possibles de la verification croisee, tels qu'affiches en pied de
+# commentaire. Les distinguer evite de faire passer "il n'y avait rien a
+# verifier" pour "la verification n'a pas eu lieu".
+VERIFY_STATES = {
+    "rien": "aucun constat a verifier",
+    "solo": "sans verification croisee, un seul fournisseur configure",
+    "echec": "verification croisee indisponible, constats publies tels quels",
+}
+
+
+def footer(reviewer: str, verifier: str, verify_state: str = "") -> str:
     who = f"Relu par `{reviewer}`" if reviewer else "Relecture indisponible"
-    who += (f", verifie par `{verifier}`." if verifier
-            else ", sans verification croisee.")
+    if verifier:
+        who += f", verifie par `{verifier}`."
+    else:
+        who += ", " + VERIFY_STATES.get(verify_state, "sans verification croisee") + "."
     return (f"_{who} Genere par "
             "[brissonjo-sudo/ci-tooling](https://github.com/brissonjo-sudo/ci-tooling). "
             "Ce commentaire est mis a jour a chaque push._")
@@ -634,7 +646,8 @@ def footer(reviewer: str, verifier: str) -> str:
 def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   review: dict | None, findings: list[dict],
                   rejected: list[dict], dropped: int, reviewer: str,
-                  verifier: str, error: str | None) -> str:
+                  verifier: str, error: str | None,
+                  verify_state: str = "") -> str:
     head = pr.get("head", {}).get("sha", "")[:7]
     parts = [
         MARKER,
@@ -652,7 +665,8 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
     if error or review is None:
         parts += ["### Verdict",
                   "INDISPONIBLE. Aucun modele n'a rendu de relecture exploitable.",
-                  "", f"```\n{error}\n```", "", "---", footer(reviewer, verifier)]
+                  "", f"```\n{error}\n```", "", "---",
+                  footer(reviewer, verifier, verify_state)]
         return "\n".join(parts)
 
     parts += ["### Verdict", f"**{compute_verdict(findings, blocking)}**"]
@@ -689,7 +703,7 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                          f"({f.get('raison') or 'non demontre par le diff'})")
         parts += ["", "</details>", ""]
 
-    parts += ["---", footer(reviewer, verifier)]
+    parts += ["---", footer(reviewer, verifier, verify_state)]
     return "\n".join(parts)
 
 
@@ -724,7 +738,7 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
     """Relit puis fait verifier. Retourne l'etat a publier."""
     out: dict[str, Any] = {"review": None, "findings": [], "rejected": [],
                            "dropped": 0, "reviewer": "", "verifier": "",
-                           "error": None}
+                           "error": None, "verify_state": "solo"}
     if not files:
         out["review"] = {"resume": "La PR ne modifie aucun fichier.",
                          "points_forts": [], "constats": [], "question": ""}
@@ -758,6 +772,11 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
 
     others = [p for p in providers
               if not str(out["reviewer"]).startswith(p.name + "/")]
+    if not others:
+        out["verify_state"] = "solo"
+    elif not findings:
+        # Rien a verifier n'est pas la meme chose que pas de verificateur.
+        out["verify_state"] = "rien"
     if findings and others:
         checker = others[0]
         print(f"Verification par {checker.name}...")
@@ -772,9 +791,11 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
         if payload is not None:
             out["findings"], out["rejected"] = apply_verdicts(findings, payload)
             out["verifier"] = verifier
+            out["verify_state"] = "fait"
             print(f"{len(out['findings'])} constat(s) confirme(s), "
                   f"{len(out['rejected'])} rejete(s)")
         else:
+            out["verify_state"] = "echec"
             print("Verification indisponible, constats publies tels quels",
                   file=sys.stderr)
     return out
@@ -819,7 +840,8 @@ def main() -> int:
     comment = build_comment(pr, files, checks, blocking, state["review"],
                             state["findings"], state["rejected"],
                             state["dropped"], state["reviewer"],
-                            state["verifier"], state["error"])
+                            state["verifier"], state["error"],
+                            state["verify_state"])
     print("=" * 60)
     print(comment)
     print("=" * 60)

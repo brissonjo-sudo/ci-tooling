@@ -26,6 +26,15 @@ Un dépôt sans aucune clé n'échoue pas : le job sort en succès sans rien
 publier, et la relecture démarre d'elle-même le jour où une clé est ajoutée.
 L'ordre des deux gestes est donc libre.
 
+Le pied de chaque commentaire dit précisément ce qui s'est passé :
+
+| Mention | Signification |
+| --- | --- |
+| `vérifié par ...` | Le second fournisseur a tranché chaque constat. |
+| `aucun constat à vérifier` | La relecture n'a rien trouvé ; il n'y avait rien à soumettre au vérificateur. |
+| `un seul fournisseur configuré` | Une seule clé est présente. |
+| `vérification croisée indisponible` | Le second fournisseur n'a pas répondu ; les constats sont publiés tels quels. |
+
 **2. Créer `.github/workflows/auto-review.yml`** avec exactement ceci :
 
 ```yaml

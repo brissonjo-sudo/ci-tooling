@@ -321,10 +321,31 @@ def test_end_to_end() -> None:
             a.http = make_transport([], json_reply(REVIEW_OK), None)
             rc, out = run_main(tmp)
             check("code retour", rc == 0, rc)
-            check("absence de verification annoncee",
-                  "sans verification croisee" in out, out[-500:])
+            check("fournisseur unique annonce",
+                  "un seul fournisseur configure" in out, out[-500:])
             os.environ["MISTRAL_API_KEY"] = "k-mistral"
             print("fournisseur unique OK")
+
+            # 3 bis. Deux fournisseurs mais aucun constat : le pied de page ne
+            #        doit pas laisser croire que la verification a manque.
+            no_findings = dict(REVIEW_OK, constats=[])
+            a.http = make_transport([], json_reply(no_findings),
+                                    json_reply(VERIFY_OK))
+            rc, out = run_main(tmp)
+            check("code retour", rc == 0, rc)
+            check("rien a verifier annonce",
+                  "aucun constat a verifier" in out, out[-500:])
+            check("pas de fausse alerte",
+                  "un seul fournisseur" not in out, out[-500:])
+            print("aucun constat a verifier OK")
+
+            # 3 ter. Le verificateur ne repond pas : dit explicitement.
+            a.http = make_transport([], json_reply(REVIEW_OK),
+                                    lambda d, s: (500, "boom", {}))
+            rc, out = run_main(tmp)
+            check("echec de verification annonce",
+                  "verification croisee indisponible" in out, out[-500:])
+            print("verificateur muet OK")
 
             # 4. Gemini tombe en 429, Mistral prend la relecture.
             def busy(data, sent):
