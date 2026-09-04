@@ -1,7 +1,7 @@
 # Outillage GitHub Actions partagé
 
-Relecture automatique des pull requests par Mistral, mutualisée pour tous les
-dépôts de `brissonjo-sudo`.
+Relecture automatique des pull requests, mutualisée pour tous les dépôts de
+`brissonjo-sudo`.
 
 À chaque ouverture ou mise à jour d'une PR, un commentaire unique est publié
 puis mis à jour à chaque push. Il contient les contrôles objectifs configurés
@@ -149,10 +149,16 @@ Trois garde-fous en découlent, du plus fiable au moins fiable.
 
 Le verdict lui-même n'est plus demandé au modèle : il est calculé à partir des
 constats qui survivent. Un modèle avait rendu « À CORRIGER » alors qu'il
-n'énonçait qu'une question. Il a déjà signalé des variables inutilisées qui servaient,
-et demandé une chose puis son contraire d'un run à l'autre. C'est une aide à la
-relecture, pas une validation. Les contrôles objectifs, eux, sont déterministes
-et fiables.
+n'énonçait qu'une question.
+
+Ces garde-fous fonctionnent. Sur la première pull request relue par le duo,
+Gemini a signalé une incohérence dans un fichier que la PR ne modifiait pas ;
+Mistral l'a rejetée en constatant que la preuve citée était introuvable dans les
+lignes ajoutées. Le commentaire publié annonçait « Aucun problème », le constat
+écarté restant consultable dans le bloc dépliable.
+
+Cela reste une aide à la relecture, pas une validation. Les contrôles objectifs,
+eux, sont déterministes et fiables.
 
 ## Développement
 
@@ -161,6 +167,8 @@ python3 scripts/test_auto_review.py
 ```
 
 Les tests simulent tous les appels réseau : aucune clé ni accès Internet n'est
-nécessaire. Ils couvrent les contrôles objectifs, la configuration, le choix
-des modèles et quatre parcours complets, dont le repli en cascade et l'échec
-total.
+nécessaire. Ils couvrent les contrôles objectifs, la lecture du JSON, le tri des
+constats, le calcul du verdict, la configuration, le choix des fournisseurs, et
+sept parcours complets : relecture puis vérification, vérificateur permissif,
+fournisseur unique, bascule d'un fournisseur à l'autre sur `429`, réponse
+illisible, mode `DRY_RUN` et absence totale de clé.
