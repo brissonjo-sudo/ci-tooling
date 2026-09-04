@@ -75,8 +75,9 @@ def test_config() -> None:
         check("defaut proteges", cfg.protected_files == set())
         check("defaut cadratins", cfg.forbid_em_dash is False)
         check("defaut regles", cfg.rules == "")
-        checks, blocking = a.build_checks(cfg, DIFF, ["docs/note.md"])
+        checks, blocking, for_model = a.build_checks(cfg, DIFF, ["docs/note.md"])
         check("aucun controle", "Aucun controle objectif" in checks, checks)
+        check("rien pour le modele", for_model == "- Aucun.", for_model)
         check("non bloquant", blocking is False)
         check("prompt de base", a.BASE_PROMPT in cfg.system_prompt())
 
@@ -95,13 +96,18 @@ def test_config() -> None:
         check("taille configuree", cfg.max_diff_chars == 5000, cfg.max_diff_chars)
         check("regles lues", "ancres" in cfg.rules, cfg.rules)
         prompt = cfg.system_prompt()
-        check("cadratin dans le prompt", "U+2014" in prompt)
+        # La regle des cadratins n'est volontairement pas transmise au modele.
+        check("cadratin absent du prompt", "cadratin" not in prompt.lower(), prompt)
         check("regles dans le prompt", "ancres" in prompt)
 
-        checks, blocking = a.build_checks(cfg, DIFF, ["docs/note.md", "data/ref.csv"])
+        checks, blocking, for_model = a.build_checks(
+            cfg, DIFF, ["docs/note.md", "data/ref.csv"])
         check("cadratins comptes", "**3**" in checks, checks)
         check("protege signale", "data/ref.csv" in checks, checks)
         check("bloquant", blocking is True)
+        check("cadratins caches au modele",
+              "adratin" not in for_model and "**3**" not in for_model, for_model)
+        check("protege visible du modele", "data/ref.csv" in for_model, for_model)
 
         # JSON invalide : le script continue avec les valeurs par defaut.
         (root / a.CONFIG_JSON).write_text("{ pas du json", encoding="utf-8")
@@ -158,6 +164,13 @@ def make_transport(calls: list, mistral):
                 {"id": "mistral-small-latest"},
             ]}), {}
         if "chat/completions" in url:
+            # Le diff de test contient le mot "cadratin" : seule la section
+            # des controles ne doit pas en parler.
+            sent = "\n".join(m["content"] for m in data["messages"])
+            check("comptage des cadratins non transmis",
+                  "Cadratins ajoutes" not in sent, sent[:300])
+            check("regle des cadratins non transmise",
+                  "U+2014" not in sent, sent[:300])
             return mistral(data)
         if url.endswith("/pulls/42") and headers["Accept"].endswith("diff"):
             return 200, DIFF, {}

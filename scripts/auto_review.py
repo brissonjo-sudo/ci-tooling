@@ -157,11 +157,11 @@ class Config:
         return "\n\n".join(parts)
 
     def system_prompt(self) -> str:
+        # forbid_em_dash n'est volontairement pas transmis au modele : le
+        # comptage est deterministe et se suffit a lui-meme. Informer le modele
+        # de la regle le poussait a signaler des occurrences inexistantes, y
+        # compris en contradiction avec le comptage affiche a cote.
         blocks = [BASE_PROMPT]
-        if self.forbid_em_dash:
-            blocks.append(
-                "Regle supplementaire : le tiret cadratin (U+2014) est interdit "
-                "hors des blocs de code. Signale toute occurrence ajoutee.")
         if self.rules:
             blocks.append("Regles propres a ce depot, elles priment sur les "
                           "consignes generales :\n\n" + self.rules)
@@ -288,9 +288,15 @@ def protected_touched(files: Iterable[str], protected: set[str]) -> list[str]:
     return sorted(f for f in files if f in protected)
 
 
-def build_checks(cfg: Config, diff: str, files: list[str]) -> tuple[str, bool]:
-    """Retourne (texte des controles, un controle bloque-t-il la fusion)."""
-    lines = []
+def build_checks(cfg: Config, diff: str,
+                 files: list[str]) -> tuple[str, bool, str]:
+    """Retourne (texte publie, un controle bloque-t-il, texte pour le modele).
+
+    Le comptage des cadratins n'est pas transmis au modele : c'est un controle
+    deterministe, et le lui montrer l'amenait a en reparler a tort.
+    """
+    published = []
+    for_model = []
     blocking = False
 
     if cfg.forbid_em_dash:
@@ -298,24 +304,28 @@ def build_checks(cfg: Config, diff: str, files: list[str]) -> tuple[str, bool]:
         if dashes:
             total = sum(dashes.values())
             detail = ", ".join(f"{f} ({n})" for f, n in sorted(dashes.items()))
-            lines.append(f"- Cadratins ajoutes hors code : **{total}**. {detail}")
+            published.append(f"- Cadratins ajoutes hors code : **{total}**. {detail}")
         else:
-            lines.append("- Cadratins ajoutes hors code : aucun.")
+            published.append("- Cadratins ajoutes hors code : aucun.")
 
     if cfg.protected_files:
         touched = protected_touched(files, cfg.protected_files)
         if touched:
             blocking = True
-            lines.append("- Fichiers proteges modifies : "
-                         + ", ".join(f"`{f}`" for f in touched)
-                         + ". L'auteur confirme le caractere intentionnel par "
-                           "un commentaire sur la PR.")
+            line = ("- Fichiers proteges modifies : "
+                    + ", ".join(f"`{f}`" for f in touched)
+                    + ". L'auteur confirme le caractere intentionnel par "
+                      "un commentaire sur la PR.")
         else:
-            lines.append("- Fichiers proteges : aucun touche.")
+            line = "- Fichiers proteges : aucun touche."
+        published.append(line)
+        for_model.append(line)
 
-    if not lines:
-        lines.append("- Aucun controle objectif configure pour ce depot.")
-    return "\n".join(lines), blocking
+    if not published:
+        published.append("- Aucun controle objectif configure pour ce depot.")
+    if not for_model:
+        for_model.append("- Aucun.")
+    return "\n".join(published), blocking, "\n".join(for_model)
 
 
 # --- Mistral -----------------------------------------------------------------
@@ -478,7 +488,7 @@ def main() -> int:
     diff = get_pr_diff(repo, pr_number, token)
     print(f"{len(files)} fichier(s), diff de {len(diff)} caracteres")
 
-    checks, blocking = build_checks(cfg, diff, files)
+    checks, blocking, checks_for_model = build_checks(cfg, diff, files)
 
     review: str | None = None
     error: str | None = None
@@ -487,7 +497,8 @@ def main() -> int:
         review = "### Verdict\nAPPROUVE. La PR ne modifie aucun fichier."
     else:
         try:
-            review, used = ask_mistral(api_key, model, cfg, pr, files, diff, checks)
+            review, used = ask_mistral(api_key, model, cfg, pr, files, diff,
+                                       checks_for_model)
         except Exception as e:  # noqa: BLE001
             error = str(e)
             print(f"Echec Mistral : {error}", file=sys.stderr)
