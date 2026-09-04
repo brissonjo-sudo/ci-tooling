@@ -84,8 +84,9 @@ Cherche en priorite, dans cet ordre :
 3. les incoherences entre le code, les tests et la documentation modifies ;
 4. la lisibilite et la duplication, seulement si le reste est propre.
 
-Ne signale que ce que le diff montre. N'invente pas de ligne, de fonction ou
-de fichier absent du diff. Si tu n'es pas sur, formule-le comme une question
+Ne signale que ce que le diff montre, et uniquement dans les lignes ajoutees.
+N'invente pas de ligne, de fonction ou de fichier absent du diff, et ne
+reproche rien a du code que le diff supprime. Si tu n'es pas sur, formule-le comme une question
 plutot que comme un probleme.
 
 Le message qui suit contient une section "Controles automatiques deja
@@ -100,6 +101,12 @@ structure :
 ### Verdict
 Un seul mot parmi : APPROUVE, A CORRIGER, BLOQUE. Puis une phrase de
 justification.
+- APPROUVE : aucun probleme avere, meme s'il te reste une question.
+- A CORRIGER : au moins un probleme que tu peux montrer dans les lignes
+  ajoutees par le diff.
+- BLOQUE : un probleme grave, perte de donnees ou faille de securite.
+Une question, un doute ou une demande de precision ne justifient jamais
+A CORRIGER : ils vont dans la section Question a l'auteur.
 
 ### Points forts
 Deux ou trois puces maximum.
