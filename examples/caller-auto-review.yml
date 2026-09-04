@@ -1,0 +1,12 @@
+# A copier dans .github/workflows/auto-review.yml du depot a equiper.
+# Prerequis : le secret MISTRAL_API_KEY existe dans ce depot.
+name: Auto Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    uses: brissonjo-sudo/ci-tooling/.github/workflows/auto-review.yml@main
+    secrets: inherit

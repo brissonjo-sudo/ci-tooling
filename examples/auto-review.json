@@ -1,0 +1,8 @@
+{
+  "protected_files": [
+    "chemin/vers/un/fichier/sensible.csv"
+  ],
+  "forbid_em_dash": false,
+  "max_diff_chars": 80000,
+  "model": "mistral-medium-latest"
+}

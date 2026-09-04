@@ -1,0 +1,80 @@
+# Workflow reutilisable : relecture d'une pull request par Mistral.
+#
+# A appeler depuis n'importe quel depot avec un fichier de dix lignes, voir
+# examples/caller-auto-review.yml et le README.
+name: Auto Review (reutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Modele Mistral demande. Defaut : la cle model de .github/auto-review.json, sinon mistral-medium-latest."
+        type: string
+        required: false
+        default: ""
+      dry-run:
+        description: "Analyser sans publier de commentaire."
+        type: boolean
+        required: false
+        default: false
+      python-version:
+        description: "Version de Python utilisee pour lancer le script."
+        type: string
+        required: false
+        default: "3.12"
+      tooling-ref:
+        description: "Reference de brissonjo-sudo/ci-tooling a utiliser. A epingler sur un tag pour figer le comportement."
+        type: string
+        required: false
+        default: "main"
+    secrets:
+      MISTRAL_API_KEY:
+        description: "Cle API Mistral. Le depot appelant passe secrets: inherit."
+        required: true
+
+jobs:
+  review:
+    # Une PR en brouillon n'est pas relue ; elle l'est des qu'elle passe en
+    # "prete a relire", si le depot appelant ecoute ready_for_review.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    # Pire cas : quatre modeles essayes avec retries (5 + 20 s) et appels de
+    # 120 s, soit environ 8 min. Au-dela, quelque chose ne va pas.
+    timeout-minutes: 10
+    # Un seul run par PR : un nouveau push annule le precedent.
+    concurrency:
+      group: auto-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout du depot appelant
+        uses: actions/checkout@v4
+        with:
+          # Seuls les fichiers de configuration sont lus, l'historique est inutile.
+          fetch-depth: 1
+
+      - name: Checkout de l'outillage
+        uses: actions/checkout@v4
+        with:
+          repository: brissonjo-sudo/ci-tooling
+          ref: ${{ inputs.tooling-ref }}
+          path: .auto-review-tooling
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Relecture Mistral
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_MODEL: ${{ inputs.model }}
+          DRY_RUN: ${{ inputs.dry-run && '1' || '' }}
+          CONFIG_DIR: ${{ github.workspace }}
+        run: python .auto-review-tooling/scripts/auto_review.py
