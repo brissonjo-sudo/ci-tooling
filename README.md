@@ -57,7 +57,7 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 
 | Clé | Défaut | Rôle |
 | --- | --- | --- |
-| `protected_files` | `[]` | Chemins dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire. |
+| `protected_files` | `[]` | Chemins, relatifs à la racine du dépôt, dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md` et l'interdit dans le prompt. |
 | `max_diff_chars` | `80000` | Taille du diff envoyée au modèle, au-delà il est tronqué. |
 | `model` | `mistral-medium-latest` | Modèle demandé en premier. |
@@ -122,7 +122,9 @@ en pay-as-you-go, sans toucher au code. Son refus coûte environ 25 secondes.
 
 ## Ce que la relecture ne fait pas
 
-Le modèle se trompe. Il a déjà signalé des variables inutilisées qui servaient,
+Le modèle se trompe. Il a déjà rendu un verdict « À CORRIGER » pour un caractère
+absent du fichier, alors que le contrôle déterministe affiché deux lignes plus
+haut dans le même commentaire annonçait zéro occurrence. Il a déjà signalé des variables inutilisées qui servaient,
 et demandé une chose puis son contraire d'un run à l'autre. C'est une aide à la
 relecture, pas une validation. Les contrôles objectifs, eux, sont déterministes
 et fiables.

@@ -88,6 +88,12 @@ Ne signale que ce que le diff montre. N'invente pas de ligne, de fonction ou
 de fichier absent du diff. Si tu n'es pas sur, formule-le comme une question
 plutot que comme un probleme.
 
+Le message qui suit contient une section "Controles automatiques deja
+effectues". Ces controles sont deterministes et font autorite. Ne les refais
+pas, ne les contredis jamais, et ne fonde aucun probleme sur un comptage que
+tu aurais fait toi-meme et qui les contredirait. Si un controle annonce zero
+occurrence, il y en a zero.
+
 Reponds en francais, en Markdown, en 350 mots maximum, avec exactement cette
 structure :
 
