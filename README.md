@@ -69,7 +69,27 @@ Toutes facultatives, à passer sous `with:` dans le dépôt appelant.
 | `model` | `""` | Prioritaire sur la clé `model` de la configuration. |
 | `dry-run` | `false` | Analyse sans publier de commentaire. |
 | `python-version` | `"3.12"` | Version de Python du job. |
-| `tooling-ref` | `"main"` | Référence de ce dépôt. À épingler sur un tag pour figer le comportement. |
+| `tooling-ref` | `"main"` | Référence de ce dépôt : branche, étiquette ou SHA de commit. |
+
+## Figer la version utilisée
+
+Par défaut un dépôt appelle `@main` : toute correction apportée ici lui profite
+immédiatement. C'est le comportement voulu dans la plupart des cas.
+
+Pour figer, remplacez la référence par un SHA de commit, qui est l'épinglage le
+plus strict :
+
+```yaml
+jobs:
+  review:
+    uses: brissonjo-sudo/ci-tooling/.github/workflows/auto-review.yml@main
+    secrets: inherit
+    with:
+      tooling-ref: 8f3c1d2e4b5a6978c0d1e2f3a4b5c6d7e8f90123
+```
+
+La référence du `uses:` sélectionne le workflow, celle de `tooling-ref`
+sélectionne le script. Épingler les deux au même SHA fige l'ensemble.
 
 ## Choix du modèle
 

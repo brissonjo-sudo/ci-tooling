@@ -23,7 +23,7 @@ on:
         required: false
         default: "3.12"
       tooling-ref:
-        description: "Reference de brissonjo-sudo/ci-tooling a utiliser. A epingler sur un tag pour figer le comportement."
+        description: "Reference de brissonjo-sudo/ci-tooling : branche, etiquette ou SHA de commit. Voir la section Figer la version du README."
         type: string
         required: false
         default: "main"
