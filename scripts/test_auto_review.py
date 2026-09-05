@@ -38,6 +38,7 @@ diff --git a/src/x.py b/src/x.py
 """
 
 FILES = ["docs/note.md", "src/x.py"]
+STATUSES = {"docs/note.md": "modified", "src/x.py": "added"}
 
 
 def check(label: str, condition: bool, detail: object = "") -> None:
@@ -61,6 +62,91 @@ def test_dashes() -> None:
 
     check("diff vide", a.count_added_dashes("") == {})
     print("controles objectifs OK")
+
+
+def build_cfg(root: Path, data: dict) -> a.Config:
+    (root / ".github").mkdir(exist_ok=True)
+    (root / a.CONFIG_JSON).write_text(json.dumps(data), encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()), \
+            contextlib.redirect_stderr(io.StringIO()):
+        return a.Config(root)
+
+
+def test_globs_and_patterns() -> None:
+    check("etoile traversante",
+          a.path_matches("app/src/a/b.php", ["app/src/*"]))
+    check("chemin exact", a.path_matches("a/b.csv", ["a/b.csv"]))
+    check("hors motif", not a.path_matches("app/tests/x.php", ["app/src/*"]))
+
+    statuses = {"m/0039.sql": "modified", "m/0040.sql": "added",
+                "m/0041.sql": "removed"}
+    check("modifie seul retenu",
+          a.immutable_touched(statuses, ["m/*.sql"]) == ["m/0039.sql"],
+          a.immutable_touched(statuses, ["m/*.sql"]))
+    check("hors motif ignore", a.immutable_touched(statuses, ["autre/*"]) == [])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        # Un motif cible un sous-ensemble de fichiers, l'autre tout le diff.
+        cfg = build_cfg(root, {"forbid_patterns": [
+            {"pattern": r"\bpy\b", "files": "src/*", "message": "Motif python",
+             "blocking": True},
+            {"pattern": "introuvable", "message": "Motif absent"},
+        ]})
+        check("deux motifs compiles", len(cfg.forbid_patterns) == 2,
+              cfg.forbid_patterns)
+        checks, blocking, for_model = a.build_checks(cfg, DIFF, STATUSES)
+        check("occurrence signalee", "Motif python : **1**" in checks, checks)
+        check("fichier cite", "src/x.py (1)" in checks, checks)
+        check("motif propre resume",
+              "Motifs interdits sans occurrence : **1** sur **2**" in checks,
+              checks)
+        check("motif bloquant", blocking is True)
+        check("motifs caches au modele", "Motif python" not in for_model,
+              for_model)
+
+        # Sans cle files, le motif couvre tout le diff.
+        cfg = build_cfg(root, {"forbid_patterns": [
+            {"pattern": "markdown|Ligne", "message": "Mot temoin"}]})
+        checks, blocking, _ = a.build_checks(cfg, DIFF, STATUSES)
+        check("sans files, les deux fichiers",
+              "docs/note.md (1)" in checks and "src/x.py (1)" in checks, checks)
+        check("non bloquant par defaut", blocking is False)
+
+        # Contrairement aux cadratins, un motif s'applique aussi dans les blocs
+        # de code : c'est du code source qu'on cherche, pas de la prose.
+        cfg = build_cfg(root, {"forbid_patterns": [
+            {"pattern": "ignore", "message": "Dans un bloc"}]})
+        checks, _, _ = a.build_checks(cfg, DIFF, STATUSES)
+        check("bloc de code inclus", "Dans un bloc : **1**" in checks, checks)
+
+        # Une regex invalide est ignoree, les autres controles continuent.
+        cfg = build_cfg(root, {"forbid_patterns": [
+            {"pattern": "(non ferme", "message": "Cassee"},
+            {"pattern": "Ligne", "message": "Valide"},
+        ], "forbid_em_dash": True})
+        check("motif invalide ecarte", len(cfg.forbid_patterns) == 1,
+              cfg.forbid_patterns)
+        checks, _, _ = a.build_checks(cfg, DIFF, STATUSES)
+        check("cadratins toujours comptes", "**3**" in checks, checks)
+
+        # protected_files accepte un glob, immutable_files distingue le statut.
+        cfg = build_cfg(root, {"protected_files": ["docs/*"],
+                               "immutable_files": ["src/*"]})
+        checks, blocking, for_model = a.build_checks(cfg, DIFF, STATUSES)
+        check("glob protege", "`docs/note.md`" in checks, checks)
+        check("ajout non immuable", "aucun modifie" in checks, checks)
+        check("protege transmis au modele", "docs/note.md" in for_model,
+              for_model)
+        check("protege bloquant", blocking is True)
+
+        cfg = build_cfg(root, {"immutable_files": ["docs/*"]})
+        checks, blocking, _ = a.build_checks(cfg, DIFF, STATUSES)
+        check("modification immuable signalee",
+              "Fichiers immuables modifies" in checks, checks)
+        check("immuable bloquant", blocking is True)
+    print("globs, motifs et fichiers immuables OK")
 
 
 # --- Lecture du JSON ---------------------------------------------------------
@@ -138,7 +224,7 @@ def test_config() -> None:
         check("ordre par defaut",
               cfg.provider_order == a.DEFAULT_PROVIDER_ORDER, cfg.provider_order)
         check("aucun modele impose", cfg.model == "")
-        checks, blocking, for_model = a.build_checks(cfg, DIFF, FILES)
+        checks, blocking, for_model = a.build_checks(cfg, DIFF, STATUSES)
         check("aucun controle", "Aucun controle objectif" in checks, checks)
         check("rien pour le modele", for_model == "- Aucun.", for_model)
         check("non bloquant", blocking is False)
@@ -165,7 +251,7 @@ def test_config() -> None:
         check("regles dans le prompt", "ancres" in prompt)
 
         checks, blocking, for_model = a.build_checks(
-            cfg, DIFF, FILES + ["data/ref.csv"])
+            cfg, DIFF, dict(STATUSES, **{"data/ref.csv": "modified"}))
         check("cadratins comptes", "**3**" in checks, checks)
         check("protege signale", "data/ref.csv" in checks, checks)
         check("bloquant", blocking is True)
@@ -252,7 +338,8 @@ def make_transport(calls: list, gemini, mistral):
                                     "deletions": 1,
                                     "head": {"sha": "abcdef1234"}}), {}
         if "/pulls/42/files" in url:
-            return 200, json.dumps([{"filename": f} for f in FILES]), {}
+            return 200, json.dumps([{"filename": f, "status": s}
+                                    for f, s in STATUSES.items()]), {}
         if url.endswith("/issues/42/comments?per_page=100"):
             return 200, json.dumps([{"id": 2, "body": a.MARKER + " ancien"}]), {}
         if url.endswith("/issues/comments/2") and method == "PATCH":
@@ -428,6 +515,7 @@ def test_end_to_end() -> None:
 
 def main() -> int:
     test_dashes()
+    test_globs_and_patterns()
     test_extract_json()
     test_findings()
     test_verdicts()

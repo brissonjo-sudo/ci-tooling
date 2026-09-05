@@ -78,7 +78,9 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 
 | Clé | Défaut | Rôle |
 | --- | --- | --- |
-| `protected_files` | `[]` | Chemins, relatifs à la racine du dépôt, dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire. |
+| `protected_files` | `[]` | Motifs de chemins, relatifs à la racine du dépôt, dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire. |
+| `immutable_files` | `[]` | Motifs de chemins qu'on ajoute mais qu'on ne modifie jamais. Un fichier **modifié** qui correspond bloque la fusion ; un fichier ajouté ne déclenche rien. |
+| `forbid_patterns` | `[]` | Expressions régulières interdites dans les lignes ajoutées. Voir ci-dessous. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md`. Contrôle purement déterministe : le modèle n'en est pas informé. |
 | `max_diff_chars` | `80000` | Taille du diff envoyée au modèle, au-delà il est tronqué. |
 | `providers` | `["gemini", "mistral"]` | Ordre des fournisseurs. Le premier qui répond relit, le suivant vérifie. |
@@ -88,6 +90,47 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 
 Un JSON invalide est signalé dans les logs et ignoré, la relecture continue
 avec les valeurs par défaut.
+
+#### Motifs de chemins
+
+`protected_files` et `immutable_files` suivent `fnmatch`, où l'étoile
+**traverse les séparateurs** : `src/*` couvre donc aussi `src/a/b.php`. Un
+chemin exact reste un motif valide. C'est volontairement plus permissif que
+`.gitignore` : un seul motif suffit à couvrir une arborescence.
+
+`immutable_files` répond à un incident réel : une migration déjà poussée est
+suivie par son numéro, pas par son contenu. La modifier après coup passe
+inaperçu jusqu'à ce qu'une autre branche fusionne la version d'origine, et
+les deux bases divergent en silence.
+
+#### `forbid_patterns`
+
+Chaque entrée compte les occurrences d'une expression régulière Python dans
+les **lignes ajoutées** du diff.
+
+```json
+"forbid_patterns": [
+  {"pattern": "Doctrine\\\\ORM", "files": "app/src/*",
+   "message": "ORM interdit, DBAL seulement", "blocking": true},
+  {"pattern": "localStorage|sessionStorage", "files": "frontend/src/*",
+   "message": "Stockage navigateur"}
+]
+```
+
+| Clé | Défaut | Rôle |
+| --- | --- | --- |
+| `pattern` | obligatoire | Expression régulière. Une regex invalide est signalée dans les logs et ignorée, les autres contrôles continuent. |
+| `files` | `*` | Motif de chemin limitant le contrôle. |
+| `message` | le motif | Texte publié dans le commentaire. |
+| `blocking` | `false` | Si vrai, une occurrence bloque la fusion. |
+
+Contrairement au comptage des cadratins, un motif s'applique **aussi dans les
+blocs de code** : ce qu'on cherche est du code source, pas de la prose. Les
+motifs sans aucune occurrence sont résumés en une ligne, pour que le
+commentaire reste lisible quand le dépôt en déclare beaucoup.
+
+Comme les cadratins, rien de tout cela n'est transmis au modèle. Seule la
+liste des fichiers protégés touchés lui est communiquée.
 
 ## Entrées du workflow réutilisable
 

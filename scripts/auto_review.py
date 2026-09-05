@@ -28,12 +28,21 @@ Configuration du depot appelant, toutes les cles etant facultatives :
   .github/auto-review.json   {
                                "rules": "regles en ligne, alternative au .md",
                                "rules_file": "chemin d'un autre fichier",
-                               "protected_files": ["chemin/a", "chemin/b"],
+                               "protected_files": ["chemin/a", "src/*/textes/*"],
+                               "immutable_files": ["migrations/*.sql"],
+                               "forbid_patterns": [{"pattern": "regex",
+                                                    "files": "src/*",
+                                                    "message": "texte publie",
+                                                    "blocking": false}],
                                "forbid_em_dash": true,
                                "max_diff_chars": 80000,
                                "providers": ["gemini", "mistral"],
                                "model": "modele du relecteur"
                              }
+
+Les chemins de configuration sont des motifs fnmatch ou l'etoile traverse les
+separateurs : "src/*" couvre donc aussi "src/a/b.php". Un chemin exact reste
+un motif valide.
 
 Variables d'environnement :
 
@@ -56,6 +65,7 @@ Aucune dependance hors bibliotheque standard.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -176,6 +186,51 @@ Un verdict par constat, dans l'ordre, sans en omettre aucun."""
 # --- Configuration du depot appelant -----------------------------------------
 
 
+class PatternRule:
+    """Un motif interdit, tel que declare dans forbid_patterns."""
+
+    def __init__(self, regex: re.Pattern, files: str, message: str,
+                 blocking: bool):
+        self.regex = regex
+        self.files = files
+        self.message = message
+        self.blocking = blocking
+
+
+def build_pattern_rules(raw: Any) -> list[PatternRule]:
+    """Compile les motifs interdits. Une entree illisible est ignoree.
+
+    Une regex invalide ne doit pas emporter la relecture : elle est signalee
+    dans les logs et le reste des controles continue, comme pour un JSON
+    invalide.
+    """
+    rules: list[PatternRule] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            print(f"forbid_patterns : entree ignoree, objet attendu ({item!r})",
+                  file=sys.stderr)
+            continue
+        pattern = str(item.get("pattern") or "")
+        if not pattern:
+            print("forbid_patterns : entree ignoree, cle 'pattern' absente",
+                  file=sys.stderr)
+            continue
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            print(f"forbid_patterns : motif ignore, regex invalide "
+                  f"({pattern!r}) : {e}", file=sys.stderr)
+            continue
+        rules.append(PatternRule(
+            regex=regex,
+            files=str(item.get("files") or "*"),
+            message=str(item.get("message") or "").strip()
+            or f"Motif interdit `{pattern}`",
+            blocking=bool(item.get("blocking", False)),
+        ))
+    return rules
+
+
 class Config:
     """Reglages du depot appelant, tous facultatifs."""
 
@@ -193,7 +248,12 @@ class Config:
                 print(f"{CONFIG_JSON} ignore : {e}", file=sys.stderr)
                 data = {}
 
-        self.protected_files: set[str] = set(data.get("protected_files") or [])
+        self.protected_files: list[str] = [str(p) for p in
+                                           (data.get("protected_files") or [])]
+        self.immutable_files: list[str] = [str(p) for p in
+                                           (data.get("immutable_files") or [])]
+        self.forbid_patterns: list[PatternRule] = build_pattern_rules(
+            data.get("forbid_patterns"))
         self.forbid_em_dash: bool = bool(data.get("forbid_em_dash", False))
         self.model: str = str(data.get("model") or "")
         order = data.get("providers") or DEFAULT_PROVIDER_ORDER
@@ -285,14 +345,20 @@ def get_pr_diff(repo: str, pr: int, token: str) -> str:
     return http_ok("GET", url, gh_headers(token, "application/vnd.github.v3.diff"))
 
 
-def get_pr_files(repo: str, pr: int, token: str) -> list[str]:
-    files: list[str] = []
+def get_pr_files(repo: str, pr: int, token: str) -> dict[str, str]:
+    """Fichiers de la PR, chemin vers statut (added, modified, removed...).
+
+    Le statut sert au controle des fichiers immuables ; partout ailleurs seule
+    la liste des chemins compte, et un dictionnaire s'y prete aussi bien.
+    """
+    files: dict[str, str] = {}
     page = 1
     while True:
         url = (f"https://api.github.com/repos/{repo}/pulls/{pr}/files"
                f"?per_page=100&page={page}")
         batch = json.loads(http_ok("GET", url, gh_headers(token)))
-        files.extend(f["filename"] for f in batch)
+        for f in batch:
+            files[f["filename"]] = str(f.get("status") or "")
         if len(batch) < 100 or page >= 30:
             return files
         page += 1
@@ -315,14 +381,13 @@ def upsert_comment(repo: str, pr: int, token: str, body: str) -> str:
 # --- Controles objectifs -----------------------------------------------------
 
 
-def count_added_dashes(diff: str) -> dict[str, int]:
-    """Compte les cadratins dans les lignes ajoutees des fichiers .md.
+def added_lines(diff: str) -> Iterable[tuple[str, str, bool]]:
+    """Parcourt les lignes ajoutees : (fichier, contenu, dans un bloc de code).
 
     Les delimiteurs de bloc de code sont suivis sur les lignes ajoutees et sur
-    les lignes de contexte, pas sur les lignes supprimees. Le compte reste
+    les lignes de contexte, pas sur les lignes supprimees. Le suivi reste
     indicatif : un bloc ouvert avant le premier hunk n'est pas vu.
     """
-    counts: dict[str, int] = {}
     current = None
     in_code = False
     for line in diff.splitlines():
@@ -340,24 +405,73 @@ def count_added_dashes(diff: str) -> dict[str, int]:
         if content.lstrip().startswith("```"):
             in_code = not in_code
             continue
-        if in_code or line[0] != "+" or not current.endswith(".md"):
+        if line[0] == "+":
+            yield current, content, in_code
+
+
+def count_added_dashes(diff: str) -> dict[str, int]:
+    """Compte les cadratins ajoutes dans les .md, hors blocs de code."""
+    counts: dict[str, int] = {}
+    for path, content, in_code in added_lines(diff):
+        if in_code or not path.endswith(".md"):
             continue
         n = content.count(DASH)
         if n:
-            counts[current] = counts.get(current, 0) + n
+            counts[path] = counts.get(path, 0) + n
     return counts
 
 
-def protected_touched(files: Iterable[str], protected: set[str]) -> list[str]:
-    return sorted(f for f in files if f in protected)
+def path_matches(path: str, patterns: Iterable[str]) -> bool:
+    """Vrai si le chemin correspond a l'un des motifs fnmatch.
+
+    L'etoile de fnmatch traverse les separateurs : "src/*" couvre aussi
+    "src/a/b.php". Un chemin exact reste un motif valide.
+    """
+    return any(fnmatch.fnmatch(path, p) for p in patterns)
+
+
+def protected_touched(files: Iterable[str],
+                      protected: Iterable[str]) -> list[str]:
+    return sorted(f for f in files if path_matches(f, protected))
+
+
+def immutable_touched(statuses: dict[str, str],
+                      patterns: Iterable[str]) -> list[str]:
+    """Fichiers immuables modifies plutot qu'ajoutes.
+
+    Une migration deja poussee est suivie par son numero, pas par son contenu :
+    la modifier apres coup passe inapercu jusqu'a ce qu'une autre branche
+    fusionne la version d'origine.
+    """
+    return sorted(f for f, status in statuses.items()
+                  if status == "modified" and path_matches(f, patterns))
+
+
+def scan_patterns(diff: str, rules: list[PatternRule]
+                  ) -> list[tuple[PatternRule, dict[str, int]]]:
+    """Compte les occurrences de chaque motif dans les lignes ajoutees."""
+    hits: list[tuple[PatternRule, dict[str, int]]] = [(r, {}) for r in rules]
+    for path, content, _ in added_lines(diff):
+        for rule, counts in hits:
+            if not fnmatch.fnmatch(path, rule.files):
+                continue
+            n = len(rule.regex.findall(content))
+            if n:
+                counts[path] = counts.get(path, 0) + n
+    return hits
+
+
+def format_counts(counts: dict[str, int]) -> str:
+    return ", ".join(f"{f} ({n})" for f, n in sorted(counts.items()))
 
 
 def build_checks(cfg: Config, diff: str,
-                 files: list[str]) -> tuple[str, bool, str]:
+                 statuses: dict[str, str]) -> tuple[str, bool, str]:
     """Retourne (texte publie, un controle bloque-t-il, texte pour le modele).
 
-    Le comptage des cadratins n'est pas transmis au modele : c'est un controle
-    deterministe, et le lui montrer l'amenait a en reparler a tort.
+    Seuls les fichiers proteges sont transmis au modele. Comptages et motifs
+    restent hors de sa vue : le lui montrer l'amenait a en reparler a tort, y
+    compris en contredisant le chiffre affiche deux lignes plus haut.
     """
     published = []
     for_model = []
@@ -366,14 +480,37 @@ def build_checks(cfg: Config, diff: str,
     if cfg.forbid_em_dash:
         dashes = count_added_dashes(diff)
         if dashes:
-            total = sum(dashes.values())
-            detail = ", ".join(f"{f} ({n})" for f, n in sorted(dashes.items()))
-            published.append(f"- Cadratins ajoutes hors code : **{total}**. {detail}")
+            published.append(f"- Cadratins ajoutes hors code : "
+                             f"**{sum(dashes.values())}**. "
+                             + format_counts(dashes))
         else:
             published.append("- Cadratins ajoutes hors code : aucun.")
 
+    clean = 0
+    for rule, counts in scan_patterns(diff, cfg.forbid_patterns):
+        if not counts:
+            clean += 1
+            continue
+        blocking = blocking or rule.blocking
+        published.append(f"- {rule.message} : **{sum(counts.values())}** "
+                         f"occurrence(s). " + format_counts(counts))
+    if clean:
+        published.append(f"- Motifs interdits sans occurrence : **{clean}** "
+                         f"sur **{len(cfg.forbid_patterns)}**.")
+
+    if cfg.immutable_files:
+        touched = immutable_touched(statuses, cfg.immutable_files)
+        if touched:
+            blocking = True
+            published.append("- Fichiers immuables modifies : "
+                             + ", ".join(f"`{f}`" for f in touched)
+                             + ". Un fichier deja versionne est modifie au "
+                               "lieu d'en ajouter un nouveau.")
+        else:
+            published.append("- Fichiers immuables : aucun modifie.")
+
     if cfg.protected_files:
-        touched = protected_touched(files, cfg.protected_files)
+        touched = protected_touched(statuses, cfg.protected_files)
         if touched:
             blocking = True
             line = ("- Fichiers proteges modifies : "
@@ -674,8 +811,8 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
     if summary:
         parts.append(summary)
     if blocking:
-        parts.append("Un fichier protege est modifie : la fusion attend une "
-                     "confirmation explicite de l'auteur.")
+        parts.append("Un controle bloquant s'est declenche : la fusion attend "
+                     "une confirmation explicite de l'auteur.")
     parts.append("")
 
     strengths = [str(s).strip() for s in (review.get("points_forts") or [])
@@ -828,12 +965,13 @@ def main() -> int:
     print("Fournisseurs disponibles : " + ", ".join(p.name for p in providers))
 
     pr = get_pr(repo, pr_number, token)
-    files = get_pr_files(repo, pr_number, token)
+    statuses = get_pr_files(repo, pr_number, token)
+    files = list(statuses)
     diff = get_pr_diff(repo, pr_number, token)
     print(f"PR #{pr_number} sur {repo} : {len(files)} fichier(s), "
           f"diff de {len(diff)} caracteres")
 
-    checks, blocking, checks_for_model = build_checks(cfg, diff, files)
+    checks, blocking, checks_for_model = build_checks(cfg, diff, statuses)
     state = review_pull_request(cfg, providers, pr, files, diff,
                                 checks_for_model, requested)
 

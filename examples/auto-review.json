@@ -1,6 +1,23 @@
 {
   "protected_files": [
-    "chemin/vers/un/fichier/sensible.csv"
+    "chemin/vers/un/fichier/sensible.csv",
+    "src/*/textes/*"
+  ],
+  "immutable_files": [
+    "migrations/*.sql"
+  ],
+  "forbid_patterns": [
+    {
+      "pattern": "https?://",
+      "files": "src/*",
+      "message": "Appel reseau dans un outil hors ligne",
+      "blocking": true
+    },
+    {
+      "pattern": "localStorage|sessionStorage",
+      "files": "frontend/src/*",
+      "message": "Stockage navigateur"
+    }
   ],
   "forbid_em_dash": false,
   "max_diff_chars": 80000,
