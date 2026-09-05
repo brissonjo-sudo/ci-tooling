@@ -73,6 +73,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -364,10 +365,25 @@ def get_pr_files(repo: str, pr: int, token: str) -> dict[str, str]:
         page += 1
 
 
-def upsert_comment(repo: str, pr: int, token: str, body: str) -> str:
+def get_commit_date(repo: str, sha: str, token: str) -> str:
+    """Date de validation du commit, pour dater la confirmation attendue."""
+    url = f"https://api.github.com/repos/{repo}/commits/{sha}"
+    data = json.loads(http_ok("GET", url, gh_headers(token)))
+    committer = (data.get("commit") or {}).get("committer") or {}
+    return str(committer.get("date") or "")
+
+
+def get_comments(repo: str, pr: int, token: str) -> list[dict]:
+    url = (f"https://api.github.com/repos/{repo}/issues/{pr}"
+           "/comments?per_page=100")
+    payload = json.loads(http_ok("GET", url, gh_headers(token)))
+    return payload if isinstance(payload, list) else []
+
+
+def upsert_comment(repo: str, pr: int, token: str, body: str,
+                   existing: list[dict]) -> str:
     """Met a jour le commentaire portant MARKER, sinon en cree un."""
     base = f"https://api.github.com/repos/{repo}/issues/{pr}/comments"
-    existing = json.loads(http_ok("GET", base + "?per_page=100", gh_headers(token)))
     for c in existing:
         if MARKER in (c.get("body") or ""):
             http_ok("PATCH",
@@ -514,9 +530,7 @@ def build_checks(cfg: Config, diff: str,
         if touched:
             blocking = True
             line = ("- Fichiers proteges modifies : "
-                    + ", ".join(f"`{f}`" for f in touched)
-                    + ". L'auteur confirme le caractere intentionnel par "
-                      "un commentaire sur la PR.")
+                    + ", ".join(f"`{f}`" for f in touched) + ".")
         else:
             line = "- Fichiers proteges : aucun touche."
         published.append(line)
@@ -739,6 +753,61 @@ def apply_verdicts(findings: list[dict],
     return confirmed, rejected
 
 
+def parse_iso(value: str) -> datetime | None:
+    """Lit un horodatage GitHub. Le Z final n'est accepte qu'a partir de 3.11."""
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def find_confirmation(comments: list[dict], author: str,
+                      head_date: str) -> dict | None:
+    """Cherche la confirmation de l'auteur pour le commit courant.
+
+    Un controle bloquant demande a l'auteur de confirmer que la modification
+    est intentionnelle. Sans cette lecture, la demande n'avait aucun moyen
+    d'aboutir : le verdict restait BLOQUE meme apres une reponse detaillee.
+
+    Est retenu le dernier commentaire de l'auteur de la PR, hors commentaire
+    de l'outil lui-meme. Il ne vaut que s'il est posterieur au commit relu :
+    une confirmation anterieure porte sur un etat qui n'est plus celui de la
+    PR, et doit etre renouvelee.
+    """
+    head = parse_iso(head_date)
+    best: tuple[datetime, dict] | None = None
+    for c in comments:
+        if (c.get("user") or {}).get("login") != author:
+            continue
+        if MARKER in (c.get("body") or ""):
+            continue
+        when = parse_iso(c.get("created_at"))
+        if when is not None and (best is None or when > best[0]):
+            best = (when, c)
+    if best is None:
+        return None
+    when, comment = best
+    return {"login": author, "date": when,
+            "url": str(comment.get("html_url") or ""),
+            "valide": head is None or when > head}
+
+
+def confirmation_line(confirmation: dict | None) -> str:
+    """Phrase publiee sous le verdict quand un controle bloquant s'applique."""
+    if confirmation is None:
+        return ("Un controle bloquant s'est declenche : la fusion attend une "
+                "confirmation de l'auteur, par un commentaire poste sur cette "
+                "pull request apres le dernier push.")
+    quand = confirmation["date"].strftime("%d/%m/%Y a %H:%M UTC")
+    if not confirmation["valide"]:
+        return (f"Un controle bloquant s'est declenche. Le dernier commentaire "
+                f"de @{confirmation['login']} date du {quand}, avant le dernier "
+                f"push : la confirmation porte sur un etat qui n'est plus celui "
+                f"de la pull request et doit etre renouvelee.")
+    return (f"Controle bloquant leve : @{confirmation['login']} a confirme par "
+            f"un commentaire du {quand}, posterieur au dernier push.")
+
+
 def compute_verdict(findings: list[dict], blocking: bool) -> str:
     if blocking or any(f["gravite"] == "grave" for f in findings):
         return "BLOQUE"
@@ -784,7 +853,8 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   review: dict | None, findings: list[dict],
                   rejected: list[dict], dropped: int, reviewer: str,
                   verifier: str, error: str | None,
-                  verify_state: str = "") -> str:
+                  verify_state: str = "",
+                  confirmation: dict | None = None) -> str:
     head = pr.get("head", {}).get("sha", "")[:7]
     parts = [
         MARKER,
@@ -806,13 +876,14 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   footer(reviewer, verifier, verify_state)]
         return "\n".join(parts)
 
-    parts += ["### Verdict", f"**{compute_verdict(findings, blocking)}**"]
+    leve = bool(confirmation and confirmation["valide"])
+    parts += ["### Verdict",
+              f"**{compute_verdict(findings, blocking and not leve)}**"]
     summary = str(review.get("resume") or "").strip()
     if summary:
         parts.append(summary)
     if blocking:
-        parts.append("Un controle bloquant s'est declenche : la fusion attend "
-                     "une confirmation explicite de l'auteur.")
+        parts.append(confirmation_line(confirmation))
     parts.append("")
 
     strengths = [str(s).strip() for s in (review.get("points_forts") or [])
@@ -972,6 +1043,21 @@ def main() -> int:
           f"diff de {len(diff)} caracteres")
 
     checks, blocking, checks_for_model = build_checks(cfg, diff, statuses)
+
+    comments = get_comments(repo, pr_number, token)
+    confirmation = None
+    if blocking:
+        # La confirmation demandee doit pouvoir aboutir : sans cette lecture,
+        # le verdict restait BLOQUE meme apres une reponse de l'auteur.
+        head_sha = str(pr.get("head", {}).get("sha") or "")
+        author = str((pr.get("user") or {}).get("login") or "")
+        confirmation = find_confirmation(
+            comments, author, get_commit_date(repo, head_sha, token))
+        if confirmation is None:
+            print(f"Controle bloquant, aucune confirmation de @{author}")
+        else:
+            etat = "valide" if confirmation["valide"] else "anterieure au push"
+            print(f"Controle bloquant, confirmation de @{author} : {etat}")
     state = review_pull_request(cfg, providers, pr, files, diff,
                                 checks_for_model, requested)
 
@@ -979,7 +1065,7 @@ def main() -> int:
                             state["findings"], state["rejected"],
                             state["dropped"], state["reviewer"],
                             state["verifier"], state["error"],
-                            state["verify_state"])
+                            state["verify_state"], confirmation)
     print("=" * 60)
     print(comment)
     print("=" * 60)
@@ -987,7 +1073,8 @@ def main() -> int:
     if dry_run:
         print("DRY_RUN=1 : commentaire non poste.")
     else:
-        print("Commentaire", upsert_comment(repo, pr_number, token, comment))
+        print("Commentaire",
+              upsert_comment(repo, pr_number, token, comment, comments))
 
     return 1 if state["error"] else 0
 

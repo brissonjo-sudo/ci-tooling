@@ -78,7 +78,7 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 
 | Clé | Défaut | Rôle |
 | --- | --- | --- |
-| `protected_files` | `[]` | Motifs de chemins, relatifs à la racine du dépôt, dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire. |
+| `protected_files` | `[]` | Motifs de chemins, relatifs à la racine du dépôt, dont toute modification bloque la fusion tant que l'auteur ne confirme pas par un commentaire (voir ci-dessous). |
 | `immutable_files` | `[]` | Motifs de chemins qu'on ajoute mais qu'on ne modifie jamais. Un fichier **modifié** qui correspond bloque la fusion ; un fichier ajouté ne déclenche rien. |
 | `forbid_patterns` | `[]` | Expressions régulières interdites dans les lignes ajoutées. Voir ci-dessous. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md`. Contrôle purement déterministe : le modèle n'en est pas informé. |
@@ -90,6 +90,28 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 
 Un JSON invalide est signalé dans les logs et ignoré, la relecture continue
 avec les valeurs par défaut.
+
+#### Lever un contrôle bloquant
+
+Un contrôle bloquant demande à l'auteur de confirmer que la modification est
+intentionnelle. **Cette confirmation est lue.** Le script relève le dernier
+commentaire de l'auteur de la pull request, hors commentaire de l'outil, et
+lève le blocage si sa date est postérieure à celle du commit relu.
+
+| État | Verdict |
+| --- | --- |
+| Aucun commentaire de l'auteur | `BLOQUE`, la confirmation est demandée. |
+| Commentaire antérieur au dernier push | `BLOQUE`, la confirmation porte sur un état qui n'est plus celui de la PR et doit être renouvelée. |
+| Commentaire postérieur au dernier push | Le blocage est levé, le commentaire publié dit par qui et quand. |
+
+Le contenu du commentaire n'est pas analysé : exiger une formule imposerait de
+la deviner. C'est la date qui fait foi, et tout nouveau push redemande une
+confirmation, ce qui est le comportement voulu quand un fichier protégé change
+encore.
+
+Sans cette lecture, le blocage n'avait aucun moyen d'être levé : le verdict
+restait `BLOQUE` jusqu'à la fusion, même après une réponse détaillée de
+l'auteur. C'est arrivé en conditions réelles.
 
 #### Motifs de chemins
 
@@ -224,7 +246,8 @@ python3 scripts/test_auto_review.py
 
 Les tests simulent tous les appels réseau : aucune clé ni accès Internet n'est
 nécessaire. Ils couvrent les contrôles objectifs, la lecture du JSON, le tri des
-constats, le calcul du verdict, la configuration, le choix des fournisseurs, et
-sept parcours complets : relecture puis vérification, vérificateur permissif,
-fournisseur unique, bascule d'un fournisseur à l'autre sur `429`, réponse
-illisible, mode `DRY_RUN` et absence totale de clé.
+constats, le calcul du verdict, la configuration, le choix des fournisseurs, la
+lecture de la confirmation de l'auteur, et huit parcours complets : relecture
+puis vérification, vérificateur permissif, fournisseur unique, bascule d'un
+fournisseur à l'autre sur `429`, réponse illisible, mode `DRY_RUN`, absence
+totale de clé, et contrôle bloquant dans ses trois états.

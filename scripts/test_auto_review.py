@@ -149,6 +149,66 @@ def test_globs_and_patterns() -> None:
     print("globs, motifs et fichiers immuables OK")
 
 
+def comment(login: str, when: str, body: str = "Je confirme.") -> dict:
+    return {"user": {"login": login}, "created_at": when, "body": body,
+            "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}
+
+
+def test_confirmation() -> None:
+    head = "2026-09-05T04:00:00Z"
+    auteur = "brissonjo-sudo"
+
+    check("aucun commentaire", a.find_confirmation([], auteur, head) is None)
+
+    autres = [comment("quelqu-un-dautre", "2026-09-05T05:00:00Z"),
+              comment(auteur, "2026-09-05T05:00:00Z", a.MARKER + " outil")]
+    check("auteur seul, hors commentaire de l'outil",
+          a.find_confirmation(autres, auteur, head) is None)
+
+    apres = a.find_confirmation(
+        [comment(auteur, "2026-09-05T05:30:00Z")], auteur, head)
+    check("posterieur au push", apres and apres["valide"], apres)
+    check("phrase de levee",
+          "leve" in a.confirmation_line(apres), a.confirmation_line(apres))
+
+    avant = a.find_confirmation(
+        [comment(auteur, "2026-09-05T03:00:00Z")], auteur, head)
+    check("anterieur au push", avant and not avant["valide"], avant)
+    check("phrase de renouvellement",
+          "renouvelee" in a.confirmation_line(avant), a.confirmation_line(avant))
+    check("phrase d'attente",
+          "attend" in a.confirmation_line(None), a.confirmation_line(None))
+
+    # Le plus recent tranche, meme si un plus ancien le precede.
+    deux = a.find_confirmation([comment(auteur, "2026-09-05T03:00:00Z"),
+                                comment(auteur, "2026-09-05T05:00:00Z")],
+                               auteur, head)
+    check("le dernier commentaire tranche", deux and deux["valide"], deux)
+
+    # Une date illisible ne doit pas faire tomber la relecture.
+    check("date illisible ignoree",
+          a.find_confirmation([comment(auteur, "hier")], auteur, head) is None)
+    sans_head = a.find_confirmation(
+        [comment(auteur, "2026-09-05T03:00:00Z")], auteur, "")
+    check("sans date de commit, on fait confiance",
+          sans_head and sans_head["valide"], sans_head)
+
+    # Le verdict suit : bloquant leve ou non.
+    pr = {"head": {"sha": "abcdef1"}, "additions": 1, "deletions": 0}
+    def verdict(conf):
+        return a.build_comment(pr, ["a.md"], "- checks", True,
+                               {"resume": "R.", "points_forts": [],
+                                "constats": [], "question": ""},
+                               [], [], 0, "gemini/x", "", None, "rien", conf)
+    check("bloque sans confirmation", "**BLOQUE**" in verdict(None),
+          verdict(None))
+    check("approuve avec confirmation", "**BLOQUE**" not in verdict(apres),
+          verdict(apres))
+    check("bloque si confirmation perimee", "**BLOQUE**" in verdict(avant),
+          verdict(avant))
+    print("confirmation de l'auteur OK")
+
+
 # --- Lecture du JSON ---------------------------------------------------------
 
 def test_extract_json() -> None:
@@ -315,7 +375,10 @@ VERIFY_OK = {"verdicts": [
 ]}
 
 
-def make_transport(calls: list, gemini, mistral):
+HEAD_DATE = "2026-09-05T04:00:00Z"
+
+
+def make_transport(calls: list, gemini, mistral, confirme_le: str = ""):
     def transport(method, url, headers, data=None, timeout=60):
         model = (data or {}).get("model", "")
         calls.append((method, url, model))
@@ -335,13 +398,20 @@ def make_transport(calls: list, gemini, mistral):
             return 200, DIFF, {}
         if url.endswith("/pulls/42"):
             return 200, json.dumps({"title": "Test", "body": None, "additions": 5,
-                                    "deletions": 1,
+                                    "deletions": 1, "user": {"login": "auteur"},
                                     "head": {"sha": "abcdef1234"}}), {}
         if "/pulls/42/files" in url:
             return 200, json.dumps([{"filename": f, "status": s}
                                     for f, s in STATUSES.items()]), {}
+        if url.endswith("/commits/abcdef1234"):
+            return 200, json.dumps(
+                {"commit": {"committer": {"date": HEAD_DATE}}}), {}
         if url.endswith("/issues/42/comments?per_page=100"):
-            return 200, json.dumps([{"id": 2, "body": a.MARKER + " ancien"}]), {}
+            fil = [{"id": 2, "body": a.MARKER + " ancien"}]
+            if confirme_le:
+                fil.append({"id": 3, "user": {"login": "auteur"},
+                            "created_at": confirme_le, "body": "Je confirme."})
+            return 200, json.dumps(fil), {}
         if url.endswith("/issues/comments/2") and method == "PATCH":
             check("marqueur conserve", a.MARKER in data["body"])
             return 200, "{}", {}
@@ -507,6 +577,36 @@ def test_end_to_end() -> None:
             check("aucun appel", calls == [], calls)
             check("message explicite", "relecture ignoree" in out, out)
             print("aucune cle OK")
+
+            # 11. Controle bloquant : le verdict suit la confirmation reelle.
+            os.environ["GEMINI_API_KEY"] = "k-gemini"
+            os.environ["MISTRAL_API_KEY"] = "k-mistral"
+            (Path(tmp) / a.CONFIG_JSON).write_text(
+                json.dumps({"protected_files": ["docs/*"]}), encoding="utf-8")
+
+            a.http = make_transport([], json_reply(REVIEW_OK),
+                                    json_reply(VERIFY_OK))
+            _, sans = run_main(tmp)
+            check("bloque sans confirmation", "**BLOQUE**" in sans, sans[-900:])
+            check("motif du blocage annonce", "attend une confirmation" in sans,
+                  sans[-900:])
+
+            a.http = make_transport([], json_reply(REVIEW_OK),
+                                    json_reply(VERIFY_OK),
+                                    confirme_le="2026-09-05T03:00:00Z")
+            _, vieille = run_main(tmp)
+            check("bloque si confirmation anterieure au push",
+                  "**BLOQUE**" in vieille and "renouvelee" in vieille,
+                  vieille[-900:])
+
+            a.http = make_transport([], json_reply(REVIEW_OK),
+                                    json_reply(VERIFY_OK),
+                                    confirme_le="2026-09-05T05:00:00Z")
+            _, avec = run_main(tmp)
+            check("leve apres confirmation posterieure au push",
+                  "**BLOQUE**" not in avec and "Controle bloquant leve" in avec,
+                  avec[-900:])
+            print("confirmation bout en bout OK")
     finally:
         a.http, a.time.sleep = original_http, original_sleep
         os.environ["GEMINI_API_KEY"] = "k-gemini"
@@ -516,6 +616,7 @@ def test_end_to_end() -> None:
 def main() -> int:
     test_dashes()
     test_globs_and_patterns()
+    test_confirmation()
     test_extract_json()
     test_findings()
     test_verdicts()
