@@ -378,7 +378,51 @@ VERIFY_OK = {"verdicts": [
 HEAD_DATE = "2026-09-05T04:00:00Z"
 
 
-def make_transport(calls: list, gemini, mistral, confirme_le: str = ""):
+# Les memes fichiers vus par l'API des fichiers, plus un binaire sans patch.
+FILE_ENTRIES = [
+    {"filename": "docs/note.md", "status": "modified",
+     "patch": DIFF.split("+++ b/docs/note.md\n")[1].split("diff --git")[0].rstrip("\n")},
+    {"filename": "src/x.py", "status": "added",
+     "patch": DIFF.split("+++ b/src/x.py\n")[1].rstrip("\n")},
+    {"filename": "preuves/scan.pdf", "status": "added"},
+]
+TOO_LARGE = json.dumps({"message": "Sorry, the diff exceeded the maximum number "
+                                   "of files (300).",
+                        "errors": [{"resource": "PullRequest", "field": "diff",
+                                    "code": "too_large"}]})
+
+
+def test_files_fallback() -> None:
+    big = "@@ -0,0 +1 @@\n+" + "x" * 5000
+    entries = FILE_ENTRIES[:2] + [
+        {"filename": "preuves/gros.json", "status": "added", "patch": big},
+        {"filename": "src/petit.py", "status": "added", "patch": "@@ -0,0 +1 @@\n+ok"},
+        FILE_ENTRIES[2],
+    ]
+    full, reviewed, omitted = a.diff_from_files(entries, 1000)
+    check("controles sur tous les patchs",
+          a.count_added_dashes(full) == {"docs/note.md": 3}, full)
+    check("gros fichier dans le diff complet", "preuves/gros.json" in full)
+    check("gros fichier hors relecture", "preuves/gros.json" not in reviewed)
+    check("petit fichier suivant relu", "+ok" in reviewed, reviewed)
+    check("budget respecte", len(reviewed) <= 1000, len(reviewed))
+    check("omis et motifs", [n for n, _ in omitted]
+          == ["preuves/gros.json", "preuves/scan.pdf"], omitted)
+    check("motif patch absent", "patch absent" in omitted[1][1], omitted)
+
+    many = [(f"f{i}.bin", "patch absent") for i in range(a.OMITTED_SHOWN + 5)]
+    body = a.build_comment({}, ["x"], "- rien", False, None, [], [], 0, "", "",
+                           "erreur", omitted=many)
+    check("section annoncee", "### Fichiers non relus" in body, body)
+    check("liste plafonnee", f"f{a.OMITTED_SHOWN}.bin" not in body
+          and "et 5 autre(s)" in body, body)
+    check("rien sans omission", "Fichiers non relus" not in a.build_comment(
+        {}, ["x"], "- rien", False, None, [], [], 0, "", "", "erreur"))
+    print("repli sur l'API des fichiers OK")
+
+
+def make_transport(calls: list, gemini, mistral, confirme_le: str = "",
+                   too_large: bool = False):
     def transport(method, url, headers, data=None, timeout=60):
         model = (data or {}).get("model", "")
         calls.append((method, url, model))
@@ -395,13 +439,14 @@ def make_transport(calls: list, gemini, mistral, confirme_le: str = ""):
             handler = gemini if "googleapis" in url else mistral
             return handler(data, sent)
         if url.endswith("/pulls/42") and headers["Accept"].endswith("diff"):
-            return 200, DIFF, {}
+            return (406, TOO_LARGE, {}) if too_large else (200, DIFF, {})
         if url.endswith("/pulls/42"):
             return 200, json.dumps({"title": "Test", "body": None, "additions": 5,
                                     "deletions": 1, "user": {"login": "auteur"},
                                     "head": {"sha": "abcdef1234"}}), {}
         if "/pulls/42/files" in url:
-            return 200, json.dumps([{"filename": f, "status": s}
+            return 200, json.dumps(FILE_ENTRIES if too_large else
+                                   [{"filename": f, "status": s}
                                     for f, s in STATUSES.items()]), {}
         if url.endswith("/commits/abcdef1234"):
             return 200, json.dumps(
@@ -462,7 +507,22 @@ def test_end_to_end() -> None:
                   "Constats ecartes avant publication : 2" in out, out)
             check("commentaire mis a jour",
                   any(m == "PATCH" for m, _, _ in calls))
+            check("PR normale sans section d'omission",
+                  "Fichiers non relus" not in out)
             print("relecture puis verification OK")
+
+            # 1 bis. Diff refuse en 406 too_large : repli sur l'API des
+            #        fichiers, memes controles, omission annoncee.
+            a.http = make_transport([], json_reply(REVIEW_OK),
+                                    json_reply(VERIFY_OK), too_large=True)
+            rc, out = run_main(tmp)
+            check("code retour sur grosse PR", rc == 0, rc)
+            check("controles sur les patchs",
+                  "Cadratins ajoutes hors code : **3**" in out, out[:900])
+            check("relecture menee", "constat reel" in out, out[:900])
+            check("binaire annonce", "`preuves/scan.pdf` : patch absent" in out,
+                  out[:1500])
+            print("grosse PR en 406 OK")
 
             # 2. Le verificateur confirme tout : le verdict suit les constats.
             a.http = make_transport([], json_reply(REVIEW_OK), json_reply(
@@ -622,6 +682,7 @@ def main() -> int:
     test_verdicts()
     test_config()
     test_providers()
+    test_files_fallback()
     test_end_to_end()
     print("\nTous les tests passent.")
     return 0
