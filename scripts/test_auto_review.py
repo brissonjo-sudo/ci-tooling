@@ -421,6 +421,27 @@ def test_files_fallback() -> None:
     print("repli sur l'API des fichiers OK")
 
 
+def test_truncation() -> None:
+    second = DIFF.index("diff --git a/src/x.py")
+    check("diff entier lu", a.truncated_files(DIFF, len(DIFF)) == [])
+    check("second fichier coupe", a.truncated_files(DIFF, second + 10)
+          == [("src/x.py", "lu en partie, coupe par la troncature du diff")])
+    check("second fichier hors budget",
+          [why for _, why in a.truncated_files(DIFF, 50)]
+          == ["lu en partie, coupe par la troncature du diff",
+              "hors budget de relecture"])
+
+    omitted = a.truncated_files(DIFF, second + 10)
+    body = a.build_comment({}, FILES, "- rien", False, {}, [], [], 0, "r", "",
+                           None, omitted=omitted)
+    check("verdict partiel sur diff tronque",
+          "**APPROUVE (relecture partielle : 1 fichier(s) sur 2 lus)**" in body,
+          body)
+    check("cause annoncee", "depasse `max_diff_chars`" in body
+          and "GitHub refuse" not in body, body)
+    print("troncature d'une PR ordinaire OK")
+
+
 def make_transport(calls: list, gemini, mistral, confirme_le: str = "",
                    too_large: bool = False):
     def transport(method, url, headers, data=None, timeout=60):
@@ -689,6 +710,7 @@ def main() -> int:
     test_config()
     test_providers()
     test_files_fallback()
+    test_truncation()
     test_end_to_end()
     print("\nTous les tests passent.")
     return 0

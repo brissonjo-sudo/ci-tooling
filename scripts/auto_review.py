@@ -400,6 +400,23 @@ def diff_from_files(entries: list[dict], budget: int
     return "".join(full), "".join(reviewed), omitted
 
 
+def truncated_files(diff: str, budget: int) -> list[tuple[str, str]]:
+    """Fichiers que la coupe du diff a budget caracteres prive de relecture
+    complete, avec leur motif. Cas d'une PR ordinaire, lue par l'endpoint diff.
+    """
+    starts = [m.start() for m in re.finditer(r"^diff --git ", diff, re.M)]
+    omitted: list[tuple[str, str]] = []
+    for start, end in zip(starts, starts[1:] + [len(diff)]):
+        if end <= budget:
+            continue
+        header = diff[start:].split("\n", 1)[0]
+        # shortcut: un chemin contenant " b/" est mal decoupe, rare.
+        name = header.rsplit(" b/", 1)[-1]
+        omitted.append((name, "lu en partie, coupe par la troncature du diff"
+                        if start < budget else "hors budget de relecture"))
+    return omitted
+
+
 def get_commit_date(repo: str, sha: str, token: str) -> str:
     """Date de validation du commit, pour dater la confirmation attendue."""
     url = f"https://api.github.com/repos/{repo}/commits/{sha}"
@@ -890,7 +907,8 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   verifier: str, error: str | None,
                   verify_state: str = "",
                   confirmation: dict | None = None,
-                  omitted: list[tuple[str, str]] | None = None) -> str:
+                  omitted: list[tuple[str, str]] | None = None,
+                  too_large: bool = False) -> str:
     head = pr.get("head", {}).get("sha", "")[:7]
     parts = [
         MARKER,
@@ -904,13 +922,19 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
     ]
     if omitted:
         shown = OMITTED_SHOWN
+        if too_large:
+            cause = ("GitHub refuse le diff complet de cette PR (plus de 300 "
+                     "fichiers ou diff trop volumineux) : la relecture repose "
+                     "sur les patchs de l'API des fichiers.")
+            reste = "ceux sans patch echappent aussi aux controles objectifs."
+        else:
+            cause = ("Le diff depasse `max_diff_chars` : le modele n'en a lu "
+                     "que le debut.")
+            reste = "les controles objectifs portent sur tout le diff."
         parts += ["### Fichiers non relus",
-                  f"GitHub refuse le diff complet de cette PR (plus de 300 "
-                  f"fichiers ou diff trop volumineux) : la relecture repose sur "
-                  f"les patchs de l'API des fichiers. **{len(omitted)}** "
-                  f"fichier(s) sur {len(files)} n'ont pas ete lus par le "
-                  f"modele, qui en a lu {len(files) - len(omitted)} ; ceux "
-                  f"sans patch echappent aussi aux controles objectifs.", ""]
+                  f"{cause} **{len(omitted)}** fichier(s) sur {len(files)} "
+                  f"n'ont pas ete lus en entier par le modele, qui en a lu "
+                  f"{len(files) - len(omitted)} ; {reste}", ""]
         parts += [f"- `{name}` : {why}" for name, why in omitted[:shown]]
         if len(omitted) > shown:
             parts.append(f"- et {len(omitted) - shown} autre(s).")
@@ -1091,17 +1115,24 @@ def main() -> int:
     entries = get_pr_files(repo, pr_number, token)
     statuses = {str(f["filename"]): str(f.get("status") or "") for f in entries}
     files = list(statuses)
-    omitted: list[tuple[str, str]] = []
+    too_large = False
     try:
         diff = review_diff = get_pr_diff(repo, pr_number, token)
     except HttpError as e:
         if e.status != 406:
             raise
         # 406 too_large : au-dela de 300 fichiers, l'endpoint diff refuse.
+        too_large = True
         diff, review_diff, omitted = diff_from_files(entries,
                                                      cfg.max_diff_chars)
         print(f"Diff refuse par GitHub (406), reconstitue depuis l'API des "
               f"fichiers : {len(omitted)} fichier(s) omis de la relecture")
+    else:
+        # Au-dela de max_diff_chars, le modele ne lit que le debut du diff.
+        omitted = truncated_files(diff, cfg.max_diff_chars)
+        if omitted:
+            print(f"Diff tronque a {cfg.max_diff_chars} caracteres : "
+                  f"{len(omitted)} fichier(s) non lus en entier")
     print(f"PR #{pr_number} sur {repo} : {len(files)} fichier(s), "
           f"diff de {len(diff)} caracteres")
 
@@ -1128,7 +1159,8 @@ def main() -> int:
                             state["findings"], state["rejected"],
                             state["dropped"], state["reviewer"],
                             state["verifier"], state["error"],
-                            state["verify_state"], confirmation, omitted)
+                            state["verify_state"], confirmation, omitted,
+                            too_large)
     print("=" * 60)
     print(comment)
     print("=" * 60)
