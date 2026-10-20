@@ -449,6 +449,10 @@ def test_truncation() -> None:
           body)
     check("cause annoncee", "depasse `max_diff_chars`" in body
           and "GitHub refuse" not in body, body)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        msg = a.build_user_message(a.Config(Path(tmp)), {}, FILES, DIFF, "-")
+    check("aucune absence sans omission", "absent" not in msg, msg)
     print("troncature d'une PR ordinaire OK")
 
 
@@ -595,6 +599,11 @@ def test_end_to_end() -> None:
                               for m in sent_to_model), sent_to_model)
             check("fichiers suivants envoyes entiers",
                   all(DIFF in m for m in sent_to_model), sent_to_model)
+            check("absence signalee au relecteur",
+                  "- preuves/gros.md (absent du diff : hors budget" in
+                  sent_to_model[0] and "- src/x.py\n" in sent_to_model[0]
+                  and "1 fichier(s) marques absents" in sent_to_model[0],
+                  sent_to_model[0][-2600:-2000])
             check("relecture menee sur diff tronque", "constat reel" in out)
             check("gros fichier annonce",
                   "`preuves/gros.md` : hors budget de relecture" in out,

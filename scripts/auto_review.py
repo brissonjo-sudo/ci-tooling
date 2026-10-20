@@ -1012,22 +1012,28 @@ def env(name: str, required: bool = True, default: str = "") -> str:
 
 
 def build_user_message(cfg: Config, pr: dict, files: list[str],
-                       diff: str, checks: str) -> str:
-    truncated = len(diff) > cfg.max_diff_chars
-    suffix = f" (tronque a {cfg.max_diff_chars} caracteres)" if truncated else ""
+                       diff: str, checks: str,
+                       omitted: list[tuple[str, str]] | None = None) -> str:
+    # Sans cette mention, le modele prend un fichier absent pour un fichier lu.
+    absent = dict(omitted or [])
+    note = (f"\n\n{len(absent)} fichier(s) marques absents ne figurent pas "
+            f"dans le diff ci-dessous : ne formule aucun constat a leur sujet."
+            if absent else "")
     return (
         f"Titre de la PR : {pr.get('title', '')}\n\n"
         f"Description :\n{pr.get('body') or '(vide)'}\n\n"
         f"Fichiers modifies ({len(files)}) :\n"
-        + "\n".join(f"- {f}" for f in files)
-        + f"\n\nControles automatiques deja effectues :\n{checks}\n\n"
-          f"Diff{suffix} :\n```diff\n{diff[:cfg.max_diff_chars]}\n```"
+        + "\n".join(f"- {f}" + (f" (absent du diff : {absent[f]})"
+                                if f in absent else "") for f in files)
+        + f"{note}\n\nControles automatiques deja effectues :\n{checks}\n\n"
+          f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```"
     )
 
 
 def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
                         files: list[str], diff: str, checks_for_model: str,
-                        requested: str) -> dict:
+                        requested: str,
+                        omitted: list[tuple[str, str]] | None = None) -> dict:
     """Relit puis fait verifier. Retourne l'etat a publier."""
     out: dict[str, Any] = {"review": None, "findings": [], "rejected": [],
                            "dropped": 0, "reviewer": "", "verifier": "",
@@ -1038,7 +1044,7 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
         out["reviewer"] = "aucun appel necessaire"
         return out
 
-    user = build_user_message(cfg, pr, files, diff, checks_for_model)
+    user = build_user_message(cfg, pr, files, diff, checks_for_model, omitted)
     errors: list[str] = []
     for provider in providers:
         print(f"Relecture par {provider.name}...")
@@ -1162,7 +1168,7 @@ def main() -> int:
             etat = "valide" if confirmation["valide"] else "anterieure au push"
             print(f"Controle bloquant, confirmation de @{author} : {etat}")
     state = review_pull_request(cfg, providers, pr, files, review_diff,
-                                checks_for_model, requested)
+                                checks_for_model, requested, omitted)
 
     comment = build_comment(pr, files, checks, blocking, state["review"],
                             state["findings"], state["rejected"],

@@ -233,6 +233,11 @@ lus)`, de même pour `A CORRIGER` et `BLOQUE`. Sans cette mention, une PR dont l
 modèle n'a lu qu'une fraction affichait un `APPROUVE` sans réserve. Une PR
 lue en entier garde un verdict nu.
 
+Le modèle le sait aussi : dans la liste des fichiers qu'il reçoit, chaque
+fichier absent de son diff porte la mention `(absent du diff : <motif>)`, avec
+la consigne de ne formuler aucun constat à son sujet. Sans elle, il pouvait
+prendre un fichier qu'il n'a pas vu pour un fichier sans problème.
+
 ### Diff tronqué
 
 Une PR ordinaire dont le diff dépasse `max_diff_chars` n'est pas refusée par
