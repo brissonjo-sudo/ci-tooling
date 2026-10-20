@@ -422,16 +422,26 @@ def test_files_fallback() -> None:
 
 
 def test_truncation() -> None:
-    second = DIFF.index("diff --git a/src/x.py")
-    check("diff entier lu", a.truncated_files(DIFF, len(DIFF)) == [])
-    check("second fichier coupe", a.truncated_files(DIFF, second + 10)
-          == [("src/x.py", "lu en partie, coupe par la troncature du diff")])
-    check("second fichier hors budget",
-          [why for _, why in a.truncated_files(DIFF, 50)]
-          == ["lu en partie, coupe par la troncature du diff",
-              "hors budget de relecture"])
+    blocks = a.split_diff(DIFF)
+    check("decoupe par fichier", [n for n, _ in blocks] == FILES, blocks)
+    check("decoupe exacte", "".join(b for _, b in blocks) == DIFF)
+    check("diff vide sans omission", a.fit_budget(a.split_diff(""), 1000)
+          == ("", []))
+    check("diff entier lu", a.fit_budget(blocks, len(DIFF)) == (DIFF, []))
 
-    omitted = a.truncated_files(DIFF, second + 10)
+    second = DIFF.index("diff --git a/src/x.py")
+    reviewed, omitted = a.fit_budget(blocks, second + 10)
+    check("aucun fichier coupe", reviewed == DIFF[:second], reviewed)
+    check("fichier hors budget omis", [n for n, _ in omitted] == ["src/x.py"]
+          and "hors budget" in omitted[0][1], omitted)
+
+    gros = "diff --git a/preuves/gros.json b/preuves/gros.json\n+" + "x" * 500 + "\n"
+    reviewed, omitted = a.fit_budget(a.split_diff(gros + DIFF), len(DIFF) + 5)
+    check("gros fichier en tete omis, suivants relus",
+          reviewed == DIFF and [n for n, _ in omitted] == ["preuves/gros.json"],
+          omitted)
+
+    _, omitted = a.fit_budget(blocks, second + 10)
     body = a.build_comment({}, FILES, "- rien", False, {}, [], [], 0, "r", "",
                            None, omitted=omitted)
     check("verdict partiel sur diff tronque",

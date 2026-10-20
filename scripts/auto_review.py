@@ -365,6 +365,33 @@ def get_pr_files(repo: str, pr: int, token: str) -> list[dict]:
         page += 1
 
 
+def fit_budget(blocks: list[tuple[str, str]], budget: int
+               ) -> tuple[str, list[tuple[str, str]]]:
+    """Diff relu par le modele et fichiers omis avec leur motif.
+
+    Les blocs (fichier, diff du fichier) sont pris dans l'ordre jusqu'a budget
+    (max_diff_chars), sans jamais couper un fichier : un bloc qui ne tient plus
+    est omis et les suivants, plus petits, peuvent encore entrer. Un gros
+    fichier de preuves ne prive donc pas le code de relecture. Un bloc vide
+    est un patch absent.
+    """
+    reviewed: list[str] = []
+    omitted: list[tuple[str, str]] = []
+    size = 0
+    for name, block in blocks:
+        if not block:
+            omitted.append((name, "patch absent (binaire, renommage seul ou "
+                                  "fichier trop volumineux pour l'API)"))
+            continue
+        if size + len(block) > budget:
+            omitted.append((name, f"hors budget de relecture ({len(block)} "
+                                  "caracteres)"))
+            continue
+        reviewed.append(block)
+        size += len(block)
+    return "".join(reviewed), omitted
+
+
 def diff_from_files(entries: list[dict], budget: int
                     ) -> tuple[str, str, list[tuple[str, str]]]:
     """Reconstitue le diff depuis les patchs de l'API des fichiers.
@@ -372,49 +399,31 @@ def diff_from_files(entries: list[dict], budget: int
     Repli quand l'endpoint diff refuse la PR (406 too_large, au-dela de 300
     fichiers). Retourne (diff complet pour les controles deterministes, diff
     relu par le modele, fichiers omis de la relecture avec leur motif).
-
-    Le diff relu tient dans budget (max_diff_chars) et n'est jamais coupe au
-    milieu d'un fichier : un patch qui ne tient plus est omis et les suivants,
-    plus petits, peuvent encore entrer. Un gros fichier de preuves ne prive
-    donc pas le code de relecture.
     """
-    full: list[str] = []
-    reviewed: list[str] = []
-    omitted: list[tuple[str, str]] = []
-    size = 0
+    blocks = []
     for f in entries:
         name = str(f.get("filename") or "")
         patch = f.get("patch")
-        if not patch:
-            omitted.append((name, "patch absent (binaire, renommage seul ou "
-                                  "fichier trop volumineux pour l'API)"))
-            continue
-        block = f"diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n{patch}\n"
-        full.append(block)
-        if size + len(block) > budget:
-            omitted.append((name, f"hors budget de relecture ({len(block)} "
-                                  "caracteres)"))
-            continue
-        reviewed.append(block)
-        size += len(block)
-    return "".join(full), "".join(reviewed), omitted
+        blocks.append((name, f"diff --git a/{name} b/{name}\n--- a/{name}\n"
+                             f"+++ b/{name}\n{patch}\n" if patch else ""))
+    reviewed, omitted = fit_budget(blocks, budget)
+    return "".join(b for _, b in blocks), reviewed, omitted
 
 
-def truncated_files(diff: str, budget: int) -> list[tuple[str, str]]:
-    """Fichiers que la coupe du diff a budget caracteres prive de relecture
-    complete, avec leur motif. Cas d'une PR ordinaire, lue par l'endpoint diff.
+def split_diff(diff: str) -> list[tuple[str, str]]:
+    """Decoupe un diff unifie en blocs (fichier, diff du fichier) dont la
+    concatenation redonne le diff exact. Un preambule rejoint le premier bloc.
     """
-    starts = [m.start() for m in re.finditer(r"^diff --git ", diff, re.M)]
-    omitted: list[tuple[str, str]] = []
+    if not diff:
+        return []  # sinon un bloc vide passerait pour un patch absent
+    starts = [0] + [m.start() for m in re.finditer(r"^diff --git ", diff, re.M)
+                    if m.start() > 0]
+    blocks = []
     for start, end in zip(starts, starts[1:] + [len(diff)]):
-        if end <= budget:
-            continue
-        header = diff[start:].split("\n", 1)[0]
+        block = diff[start:end]
         # shortcut: un chemin contenant " b/" est mal decoupe, rare.
-        name = header.rsplit(" b/", 1)[-1]
-        omitted.append((name, "lu en partie, coupe par la troncature du diff"
-                        if start < budget else "hors budget de relecture"))
-    return omitted
+        blocks.append((block.split("\n", 1)[0].rsplit(" b/", 1)[-1], block))
+    return blocks
 
 
 def get_commit_date(repo: str, sha: str, token: str) -> str:
@@ -928,12 +937,12 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                      "sur les patchs de l'API des fichiers.")
             reste = "ceux sans patch echappent aussi aux controles objectifs."
         else:
-            cause = ("Le diff depasse `max_diff_chars` : le modele n'en a lu "
-                     "que le debut.")
+            cause = ("Le diff depasse `max_diff_chars` : le modele n'a recu "
+                     "que les fichiers entiers qui tiennent dans ce plafond.")
             reste = "les controles objectifs portent sur tout le diff."
         parts += ["### Fichiers non relus",
                   f"{cause} **{len(omitted)}** fichier(s) sur {len(files)} "
-                  f"n'ont pas ete lus en entier par le modele, qui en a lu "
+                  f"n'ont pas ete lus par le modele, qui en a lu "
                   f"{len(files) - len(omitted)} ; {reste}", ""]
         parts += [f"- `{name}` : {why}" for name, why in omitted[:shown]]
         if len(omitted) > shown:
@@ -1128,11 +1137,11 @@ def main() -> int:
         print(f"Diff refuse par GitHub (406), reconstitue depuis l'API des "
               f"fichiers : {len(omitted)} fichier(s) omis de la relecture")
     else:
-        # Au-dela de max_diff_chars, le modele ne lit que le debut du diff.
-        omitted = truncated_files(diff, cfg.max_diff_chars)
+        # Meme mise en budget que le repli 406 : aucun fichier coupe.
+        review_diff, omitted = fit_budget(split_diff(diff), cfg.max_diff_chars)
         if omitted:
-            print(f"Diff tronque a {cfg.max_diff_chars} caracteres : "
-                  f"{len(omitted)} fichier(s) non lus en entier")
+            print(f"Diff au-dela de {cfg.max_diff_chars} caracteres : "
+                  f"{len(omitted)} fichier(s) omis de la relecture")
     print(f"PR #{pr_number} sur {repo} : {len(files)} fichier(s), "
           f"diff de {len(diff)} caracteres")
 
