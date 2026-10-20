@@ -111,6 +111,8 @@ RETRY_DELAYS = (5, 20)
 # d'ecrire la reponse : trop bas, ils rendent un message sans contenu.
 REVIEW_MAX_TOKENS = 4000
 DEFAULT_MAX_DIFF_CHARS = 80_000
+# Fichiers omis listes nommement dans le commentaire, le reste est compte.
+OMITTED_SHOWN = 30
 DASH = "—"  # tiret cadratin, en echappement pour rester reperable
 
 CONFIG_JSON = ".github/auto-review.json"
@@ -346,23 +348,56 @@ def get_pr_diff(repo: str, pr: int, token: str) -> str:
     return http_ok("GET", url, gh_headers(token, "application/vnd.github.v3.diff"))
 
 
-def get_pr_files(repo: str, pr: int, token: str) -> dict[str, str]:
-    """Fichiers de la PR, chemin vers statut (added, modified, removed...).
+def get_pr_files(repo: str, pr: int, token: str) -> list[dict]:
+    """Fichiers de la PR tels que les rend l'API : filename, status, patch...
 
-    Le statut sert au controle des fichiers immuables ; partout ailleurs seule
-    la liste des chemins compte, et un dictionnaire s'y prete aussi bien.
+    GitHub plafonne cette liste a 3000 fichiers, soit 30 pages de 100.
     """
-    files: dict[str, str] = {}
+    files: list[dict] = []
     page = 1
     while True:
         url = (f"https://api.github.com/repos/{repo}/pulls/{pr}/files"
                f"?per_page=100&page={page}")
         batch = json.loads(http_ok("GET", url, gh_headers(token)))
-        for f in batch:
-            files[f["filename"]] = str(f.get("status") or "")
+        files.extend(batch)
         if len(batch) < 100 or page >= 30:
             return files
         page += 1
+
+
+def diff_from_files(entries: list[dict], budget: int
+                    ) -> tuple[str, str, list[tuple[str, str]]]:
+    """Reconstitue le diff depuis les patchs de l'API des fichiers.
+
+    Repli quand l'endpoint diff refuse la PR (406 too_large, au-dela de 300
+    fichiers). Retourne (diff complet pour les controles deterministes, diff
+    relu par le modele, fichiers omis de la relecture avec leur motif).
+
+    Le diff relu tient dans budget (max_diff_chars) et n'est jamais coupe au
+    milieu d'un fichier : un patch qui ne tient plus est omis et les suivants,
+    plus petits, peuvent encore entrer. Un gros fichier de preuves ne prive
+    donc pas le code de relecture.
+    """
+    full: list[str] = []
+    reviewed: list[str] = []
+    omitted: list[tuple[str, str]] = []
+    size = 0
+    for f in entries:
+        name = str(f.get("filename") or "")
+        patch = f.get("patch")
+        if not patch:
+            omitted.append((name, "patch absent (binaire, renommage seul ou "
+                                  "fichier trop volumineux pour l'API)"))
+            continue
+        block = f"diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n{patch}\n"
+        full.append(block)
+        if size + len(block) > budget:
+            omitted.append((name, f"hors budget de relecture ({len(block)} "
+                                  "caracteres)"))
+            continue
+        reviewed.append(block)
+        size += len(block)
+    return "".join(full), "".join(reviewed), omitted
 
 
 def get_commit_date(repo: str, sha: str, token: str) -> str:
@@ -854,7 +889,8 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   rejected: list[dict], dropped: int, reviewer: str,
                   verifier: str, error: str | None,
                   verify_state: str = "",
-                  confirmation: dict | None = None) -> str:
+                  confirmation: dict | None = None,
+                  omitted: list[tuple[str, str]] | None = None) -> str:
     head = pr.get("head", {}).get("sha", "")[:7]
     parts = [
         MARKER,
@@ -865,9 +901,20 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
         "### Controles objectifs",
         checks,
         "",
-        "---",
-        "",
     ]
+    if omitted:
+        shown = OMITTED_SHOWN
+        parts += ["### Fichiers non relus",
+                  f"GitHub refuse le diff complet de cette PR (plus de 300 "
+                  f"fichiers ou diff trop volumineux) : la relecture repose sur "
+                  f"les patchs de l'API des fichiers. **{len(omitted)}** "
+                  f"fichier(s) n'ont pas ete lus par le modele ; ceux sans "
+                  f"patch echappent aussi aux controles objectifs.", ""]
+        parts += [f"- `{name}` : {why}" for name, why in omitted[:shown]]
+        if len(omitted) > shown:
+            parts.append(f"- et {len(omitted) - shown} autre(s).")
+        parts.append("")
+    parts += ["---", ""]
 
     if error or review is None:
         parts += ["### Verdict",
@@ -1036,9 +1083,20 @@ def main() -> int:
     print("Fournisseurs disponibles : " + ", ".join(p.name for p in providers))
 
     pr = get_pr(repo, pr_number, token)
-    statuses = get_pr_files(repo, pr_number, token)
+    entries = get_pr_files(repo, pr_number, token)
+    statuses = {str(f["filename"]): str(f.get("status") or "") for f in entries}
     files = list(statuses)
-    diff = get_pr_diff(repo, pr_number, token)
+    omitted: list[tuple[str, str]] = []
+    try:
+        diff = review_diff = get_pr_diff(repo, pr_number, token)
+    except HttpError as e:
+        if e.status != 406:
+            raise
+        # 406 too_large : au-dela de 300 fichiers, l'endpoint diff refuse.
+        diff, review_diff, omitted = diff_from_files(entries,
+                                                     cfg.max_diff_chars)
+        print(f"Diff refuse par GitHub (406), reconstitue depuis l'API des "
+              f"fichiers : {len(omitted)} fichier(s) omis de la relecture")
     print(f"PR #{pr_number} sur {repo} : {len(files)} fichier(s), "
           f"diff de {len(diff)} caracteres")
 
@@ -1058,14 +1116,14 @@ def main() -> int:
         else:
             etat = "valide" if confirmation["valide"] else "anterieure au push"
             print(f"Controle bloquant, confirmation de @{author} : {etat}")
-    state = review_pull_request(cfg, providers, pr, files, diff,
+    state = review_pull_request(cfg, providers, pr, files, review_diff,
                                 checks_for_model, requested)
 
     comment = build_comment(pr, files, checks, blocking, state["review"],
                             state["findings"], state["rejected"],
                             state["dropped"], state["reviewer"],
                             state["verifier"], state["error"],
-                            state["verify_state"], confirmation)
+                            state["verify_state"], confirmation, omitted)
     print("=" * 60)
     print(comment)
     print("=" * 60)

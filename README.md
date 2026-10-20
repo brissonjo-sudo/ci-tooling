@@ -82,7 +82,7 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 | `immutable_files` | `[]` | Motifs de chemins qu'on ajoute mais qu'on ne modifie jamais. Un fichier **modifié** qui correspond bloque la fusion ; un fichier ajouté ne déclenche rien. |
 | `forbid_patterns` | `[]` | Expressions régulières interdites dans les lignes ajoutées. Voir ci-dessous. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md`. Contrôle purement déterministe : le modèle n'en est pas informé. |
-| `max_diff_chars` | `80000` | Taille du diff envoyée au modèle, au-delà il est tronqué. |
+| `max_diff_chars` | `80000` | Taille du diff envoyée au modèle, au-delà il est tronqué. Sur une grosse PR, c'est aussi le plafond de la relecture, voir [Grosses pull requests](#grosses-pull-requests). |
 | `providers` | `["gemini", "mistral"]` | Ordre des fournisseurs. Le premier qui répond relit, le suivant vérifie. |
 | `model` | `""` | Modèle demandé en premier au relecteur. |
 | `rules` | `""` | Règles en ligne, alternative à `auto-review.md`. |
@@ -206,6 +206,27 @@ Relevé en conditions réelles sur les paliers gratuits :
 Les deux fournisseurs exposent la même interface `/chat/completions`, ce qui
 permet de les traiter avec le même code.
 
+## Grosses pull requests
+
+Au-delà de 300 fichiers, ou pour un diff trop volumineux, GitHub refuse l'endpoint
+diff (`406`, code `too_large`). La relecture bascule alors sur l'API « List pull
+request files » (100 fichiers par page, 3000 au plus), qui rend un patch par
+fichier. Les PR ordinaires ne sont pas concernées : elles passent toujours par
+l'endpoint diff.
+
+- **Contrôles objectifs** : ils portent sur tous les patchs disponibles.
+- **Relecture par le modèle** : les patchs sont pris dans l'ordre jusqu'à
+  `max_diff_chars` caractères, sans jamais couper un fichier. Un patch qui ne
+  tient plus est omis et les suivants, plus petits, peuvent encore entrer : un
+  gros fichier de preuves ne prive pas le code de relecture.
+- **Patch absent** : GitHub n'en fournit pas pour un binaire, un renommage seul
+  ou un fichier trop volumineux. Ces fichiers échappent au modèle et aux
+  contrôles sur les lignes ajoutées ; les contrôles par chemin (fichiers
+  protégés, immuables) les couvrent toujours.
+
+Le commentaire publié ajoute alors une section « Fichiers non relus » : le
+nombre de fichiers omis, puis les 30 premiers avec leur motif.
+
 ## Ce que la relecture ne fait pas
 
 Le modèle se trompe. Il a déjà rendu deux fois un verdict « À CORRIGER » pour un
@@ -247,7 +268,8 @@ python3 scripts/test_auto_review.py
 Les tests simulent tous les appels réseau : aucune clé ni accès Internet n'est
 nécessaire. Ils couvrent les contrôles objectifs, la lecture du JSON, le tri des
 constats, le calcul du verdict, la configuration, le choix des fournisseurs, la
-lecture de la confirmation de l'auteur, et huit parcours complets : relecture
-puis vérification, vérificateur permissif, fournisseur unique, bascule d'un
+lecture de la confirmation de l'auteur, le repli des grosses PR, et neuf
+parcours complets : relecture puis vérification, grosse PR refusée en `406`,
+vérificateur permissif, fournisseur unique, bascule d'un
 fournisseur à l'autre sur `429`, réponse illisible, mode `DRY_RUN`, absence
 totale de clé, et contrôle bloquant dans ses trois états.
