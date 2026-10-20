@@ -908,8 +908,9 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   f"GitHub refuse le diff complet de cette PR (plus de 300 "
                   f"fichiers ou diff trop volumineux) : la relecture repose sur "
                   f"les patchs de l'API des fichiers. **{len(omitted)}** "
-                  f"fichier(s) n'ont pas ete lus par le modele ; ceux sans "
-                  f"patch echappent aussi aux controles objectifs.", ""]
+                  f"fichier(s) sur {len(files)} n'ont pas ete lus par le "
+                  f"modele, qui en a lu {len(files) - len(omitted)} ; ceux "
+                  f"sans patch echappent aussi aux controles objectifs.", ""]
         parts += [f"- `{name}` : {why}" for name, why in omitted[:shown]]
         if len(omitted) > shown:
             parts.append(f"- et {len(omitted) - shown} autre(s).")
@@ -924,8 +925,12 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
         return "\n".join(parts)
 
     leve = bool(confirmation and confirmation["valide"])
-    parts += ["### Verdict",
-              f"**{compute_verdict(findings, blocking and not leve)}**"]
+    verdict = compute_verdict(findings, blocking and not leve)
+    if omitted:
+        # Un APPROUVE sur 19 fichiers lus sur 345 ne doit pas passer pour entier.
+        verdict += (f" (relecture partielle : {len(files) - len(omitted)} "
+                    f"fichier(s) sur {len(files)} lus)")
+    parts += ["### Verdict", f"**{verdict}**"]
     summary = str(review.get("resume") or "").strip()
     if summary:
         parts.append(summary)

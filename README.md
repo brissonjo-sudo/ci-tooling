@@ -225,7 +225,13 @@ l'endpoint diff.
   protégés, immuables) les couvrent toujours.
 
 Le commentaire publié ajoute alors une section « Fichiers non relus » : le
-nombre de fichiers omis, puis les 30 premiers avec leur motif.
+nombre de fichiers omis et de fichiers lus, puis les 30 premiers omis avec leur
+motif.
+
+Le verdict le dit aussi : `APPROUVE (relecture partielle : 19 fichier(s) sur 345
+lus)`, de même pour `A CORRIGER` et `BLOQUE`. Sans cette mention, une PR dont le
+modèle n'a lu qu'une fraction affichait un `APPROUVE` sans réserve. Les PR
+ordinaires gardent un verdict nu.
 
 ## Ce que la relecture ne fait pas
 

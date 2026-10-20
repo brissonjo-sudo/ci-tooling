@@ -509,6 +509,8 @@ def test_end_to_end() -> None:
                   any(m == "PATCH" for m, _, _ in calls))
             check("PR normale sans section d'omission",
                   "Fichiers non relus" not in out)
+            check("PR normale sans verdict partiel",
+                  "relecture partielle" not in out, out[:900])
             print("relecture puis verification OK")
 
             # 1 bis. Diff refuse en 406 too_large : repli sur l'API des
@@ -522,6 +524,10 @@ def test_end_to_end() -> None:
             check("relecture menee", "constat reel" in out, out[:900])
             check("binaire annonce", "`preuves/scan.pdf` : patch absent" in out,
                   out[:1500])
+            check("verdict partiel annonce",
+                  "**A CORRIGER (relecture partielle : 2 fichier(s) sur 3 lus)**"
+                  in out, out[:1500])
+            check("fichiers lus comptes", "qui en a lu 2" in out, out[:1500])
             print("grosse PR en 406 OK")
 
             # 2. Le verificateur confirme tout : le verdict suit les constats.
