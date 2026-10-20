@@ -1079,10 +1079,16 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
     if findings and others:
         checker = others[0]
         print(f"Verification par {checker.name}...")
+        # Un constat sur un fichier absent du diff ne peut pas etre demontre.
+        absent = ("Fichiers absents du diff ci-dessous, tout constat a leur "
+                  "sujet est a rejeter :\n"
+                  + "".join(f"- {name} : {why}\n" for name, why in omitted)
+                  + "\n" if omitted else "")
         try:
             payload, verifier, _ = checker.run(
                 VERIFY_PROMPT,
                 f"Constats a verifier :\n{numbered_findings(findings)}\n\n"
+                f"{absent}"
                 f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```")
         except Exception as e:  # noqa: BLE001
             payload, verifier = None, ""

@@ -528,8 +528,14 @@ def test_end_to_end() -> None:
 
             # 1. Gemini relit, Mistral verifie et rejette un constat invente.
             calls: list = []
+            verify_sent: list = []
+
+            def verify_recorded(data, sent):
+                verify_sent.append(sent)
+                return json_reply(VERIFY_OK)(data, sent)
+
             a.http = make_transport(calls, json_reply(REVIEW_OK),
-                                    json_reply(VERIFY_OK))
+                                    verify_recorded)
             os.environ.pop("DRY_RUN", None)
             rc, out = run_main(tmp)
             check("code retour", rc == 0, rc)
@@ -547,6 +553,8 @@ def test_end_to_end() -> None:
                   "Fichiers non relus" not in out)
             check("PR normale sans verdict partiel",
                   "relecture partielle" not in out, out[:900])
+            check("verificateur sans liste d'absents", len(verify_sent) == 1
+                  and "Fichiers absents" not in verify_sent[0], verify_sent)
             print("relecture puis verification OK")
 
             # 1 bis. Diff refuse en 406 too_large : repli sur l'API des
@@ -604,6 +612,11 @@ def test_end_to_end() -> None:
                   sent_to_model[0] and "- src/x.py\n" in sent_to_model[0]
                   and "1 fichier(s) marques absents" in sent_to_model[0],
                   sent_to_model[0][-2600:-2000])
+            check("absence signalee au verificateur",
+                  "tout constat a leur sujet est a rejeter :\n"
+                  "- preuves/gros.md : hors budget" in sent_to_model[1]
+                  and "- src/x.py :" not in sent_to_model[1],
+                  sent_to_model[1][-2600:-2000])
             check("relecture menee sur diff tronque", "constat reel" in out)
             check("gros fichier annonce",
                   "`preuves/gros.md` : hors budget de relecture" in out,
