@@ -759,6 +759,26 @@ def test_end_to_end() -> None:
             check("relais pris", "mistral/" in out, out[:400])
             print("exception fournisseur OK")
 
+            # 6 quater. Delai depasse : le repli du meme fournisseur relit.
+            def slow_first(data, sent):
+                if data["model"] == "gemini-3.8-flash":
+                    raise TimeoutError("The read operation timed out")
+                return json_reply(REVIEW_OK)(data, sent)
+            base = make_transport([], slow_first, json_reply(VERIFY_OK))
+
+            def all_visible(method, url, headers, data=None, timeout=60):
+                # Tous les replis Gemini visibles, sinon aucun n'est tente.
+                if "googleapis" in url and url.endswith("/models"):
+                    return 200, json.dumps({"data": [
+                        {"id": m} for m in a.PROVIDERS["gemini"]["models"]]}), {}
+                return base(method, url, headers, data, timeout)
+            a.http = all_visible
+            rc, out = run_main(tmp)
+            check("timeout absorbe", rc == 0, rc)
+            check("repli gemini apres timeout",
+                  "gemini/gemini-3.5-flash-lite" in out, out[-600:])
+            print("delai depasse OK")
+
             # 7. DRY_RUN : rien n'est publie.
             calls = []
             a.http = make_transport(calls, json_reply(REVIEW_OK),

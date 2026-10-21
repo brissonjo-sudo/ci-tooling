@@ -191,8 +191,8 @@ sélectionne le script. Épingler les deux au même SHA fige l'ensemble.
 ## Choix du modèle
 
 Le modèle demandé est toujours essayé en premier, puis les replis du
-fournisseur, du plus capable au plus modeste. Un `403` ou un `404` passe au
-suivant sans attente, un `429` déclenche deux nouvelles tentatives en
+fournisseur, du plus capable au plus modeste. Un `403`, un `404` ou une
+absence de réponse en 120 s passe au suivant sans attente, un `429` déclenche deux nouvelles tentatives en
 respectant l'en-tête `Retry-After`. Si un fournisseur échoue entièrement, le
 suivant prend la relecture.
 

@@ -696,8 +696,15 @@ class Provider:
         }
         last = ""
         for attempt in range(len(RETRY_DELAYS) + 1):
-            status, body, headers = http("POST", f"{self.base}/chat/completions",
-                                         self.headers, payload, timeout=120)
+            try:
+                status, body, headers = http("POST", f"{self.base}/chat/completions",
+                                             self.headers, payload, timeout=120)
+            except OSError as e:
+                # Delai depasse ou coupure reseau : le modele suivant prend
+                # le relais, sans reessayer celui-ci 120 s de plus.
+                last = f"{model}: {type(e).__name__}: {e}"
+                print(f"  {last}", file=sys.stderr)
+                return None, last
             if status < 300:
                 # Un 200 ne garantit pas un contenu : un modele de raisonnement
                 # qui epuise son budget de jetons, ou dont la reponse est
