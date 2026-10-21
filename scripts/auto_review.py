@@ -771,7 +771,8 @@ def clean_findings(raw: Any, files: list[str]) -> tuple[list[dict], int]:
         if not isinstance(item, dict):
             dropped += 1
             continue
-        path = str(item.get("fichier") or "").strip().lstrip("./")
+        # removeprefix et non lstrip : lstrip mangerait le point de .github/.
+        path = str(item.get("fichier") or "").strip().removeprefix("./")
         problem = str(item.get("probleme") or "").strip()
         if not problem:
             dropped += 1
