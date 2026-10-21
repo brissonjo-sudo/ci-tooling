@@ -352,6 +352,27 @@ def test_providers() -> None:
     with contextlib.redirect_stdout(io.StringIO()):
         cands = p.candidates()
     check("sans liste, tous les replis", cands == p.models, cands)
+
+    # Raisonnement reduit pour Gemini seul, budget epuise rendu lisible.
+    sent: list = []
+    original_http = a.http
+
+    def length(method, url, headers, data=None, timeout=0):
+        sent.append(data)
+        return 200, json.dumps({"choices": [{"finish_reason": "length",
+                                             "message": {}}],
+                                "usage": {"completion_tokens": 4000}}), {}
+    a.http = length
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            _, err = a.Provider("gemini", "k").ask_json("m", "s", "u")
+            a.Provider("mistral", "k").ask_json("m", "s", "u")
+    finally:
+        a.http = original_http
+    check("raisonnement bas pour gemini",
+          sent[0].get("reasoning_effort") == "low", sent[0])
+    check("rien de plus pour mistral", "reasoning_effort" not in sent[1], sent[1])
+    check("usage dans l'erreur", '"completion_tokens": 4000' in err, err)
     print("fournisseurs OK")
 
 
