@@ -453,6 +453,13 @@ def test_truncation() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         msg = a.build_user_message(a.Config(Path(tmp)), {}, FILES, DIFF, "-")
     check("aucune absence sans omission", "absent" not in msg, msg)
+
+    many = [(f"f{i}.bin", "patch absent") for i in range(a.OMITTED_SHOWN + 5)]
+    block = a.absent_block(many, "consigne")
+    check("liste des absents plafonnee", f"- f{a.OMITTED_SHOWN - 1}.bin" in block
+          and f"f{a.OMITTED_SHOWN}.bin" not in block
+          and f"({a.OMITTED_SHOWN + 5}), consigne" in block
+          and "- et 5 autre(s) : tout fichier qui n'apparait pas" in block, block)
     print("troncature d'une PR ordinaire OK")
 
 
@@ -608,9 +615,9 @@ def test_end_to_end() -> None:
             check("fichiers suivants envoyes entiers",
                   all(DIFF in m for m in sent_to_model), sent_to_model)
             check("absence signalee au relecteur",
-                  "- preuves/gros.md (absent du diff : hors budget" in
-                  sent_to_model[0] and "- src/x.py\n" in sent_to_model[0]
-                  and "1 fichier(s) marques absents" in sent_to_model[0],
+                  "Fichiers absents du diff ci-dessous (1), ne formule aucun "
+                  "constat a leur sujet :\n- preuves/gros.md : hors budget"
+                  in sent_to_model[0] and "- src/x.py :" not in sent_to_model[0],
                   sent_to_model[0][-2600:-2000])
             check("absence signalee au verificateur",
                   "tout constat a leur sujet est a rejeter :\n"

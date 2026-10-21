@@ -233,12 +233,14 @@ lus)`, de même pour `A CORRIGER` et `BLOQUE`. Sans cette mention, une PR dont l
 modèle n'a lu qu'une fraction affichait un `APPROUVE` sans réserve. Une PR
 lue en entier garde un verdict nu.
 
-Le modèle le sait aussi : dans la liste des fichiers qu'il reçoit, chaque
-fichier absent de son diff porte la mention `(absent du diff : <motif>)`, avec
-la consigne de ne formuler aucun constat à son sujet. Sans elle, il pouvait
-prendre un fichier qu'il n'a pas vu pour un fichier sans problème. Le
-vérificateur reçoit la même liste, avec le motif de chaque absence, et la
-consigne de rejeter tout constat qui porte sur l'un de ces fichiers.
+Le modèle le sait aussi : le relecteur reçoit la liste des fichiers absents de
+son diff, avec leur motif et la consigne de ne formuler aucun constat à leur
+sujet. Sans elle, il pouvait prendre un fichier qu'il n'a pas vu pour un
+fichier sans problème. Le vérificateur reçoit la même liste, avec la consigne
+de rejeter tout constat qui porte sur l'un de ces fichiers. Comme dans le
+commentaire, la liste s'arrête aux 30 premiers fichiers : au-delà, elle donne
+le nombre restant et précise que tout fichier qui n'apparaît pas dans le diff
+en est absent.
 
 ### Diff tronqué
 

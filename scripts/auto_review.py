@@ -111,7 +111,8 @@ RETRY_DELAYS = (5, 20)
 # d'ecrire la reponse : trop bas, ils rendent un message sans contenu.
 REVIEW_MAX_TOKENS = 4000
 DEFAULT_MAX_DIFF_CHARS = 80_000
-# Fichiers omis listes nommement dans le commentaire, le reste est compte.
+# Fichiers omis listes nommement dans le commentaire et dans les messages aux
+# modeles, le reste est compte.
 OMITTED_SHOWN = 30
 DASH = "—"  # tiret cadratin, en echappement pour rester reperable
 
@@ -1011,21 +1012,34 @@ def env(name: str, required: bool = True, default: str = "") -> str:
     return value
 
 
+def absent_block(omitted: list[tuple[str, str]] | None, consigne: str) -> str:
+    """Fichiers absents du diff envoye au modele, plafonnes a OMITTED_SHOWN.
+
+    Sans cette mention, le modele prend un fichier absent pour un fichier lu.
+    Au-dela du plafond, une regle generale remplace la liste.
+    """
+    if not omitted:
+        return ""
+    lines = [f"Fichiers absents du diff ci-dessous ({len(omitted)}), "
+             f"{consigne} :"]
+    lines += [f"- {name} : {why}" for name, why in omitted[:OMITTED_SHOWN]]
+    if len(omitted) > OMITTED_SHOWN:
+        lines.append(f"- et {len(omitted) - OMITTED_SHOWN} autre(s) : tout "
+                     "fichier qui n'apparait pas dans le diff ci-dessous en "
+                     "est absent.")
+    return "\n".join(lines) + "\n\n"
+
+
 def build_user_message(cfg: Config, pr: dict, files: list[str],
                        diff: str, checks: str,
                        omitted: list[tuple[str, str]] | None = None) -> str:
-    # Sans cette mention, le modele prend un fichier absent pour un fichier lu.
-    absent = dict(omitted or [])
-    note = (f"\n\n{len(absent)} fichier(s) marques absents ne figurent pas "
-            f"dans le diff ci-dessous : ne formule aucun constat a leur sujet."
-            if absent else "")
     return (
         f"Titre de la PR : {pr.get('title', '')}\n\n"
         f"Description :\n{pr.get('body') or '(vide)'}\n\n"
         f"Fichiers modifies ({len(files)}) :\n"
-        + "\n".join(f"- {f}" + (f" (absent du diff : {absent[f]})"
-                                if f in absent else "") for f in files)
-        + f"{note}\n\nControles automatiques deja effectues :\n{checks}\n\n"
+        + "\n".join(f"- {f}" for f in files)
+        + "\n\n" + absent_block(omitted, "ne formule aucun constat a leur sujet")
+        + f"Controles automatiques deja effectues :\n{checks}\n\n"
           f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```"
     )
 
@@ -1080,10 +1094,7 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
         checker = others[0]
         print(f"Verification par {checker.name}...")
         # Un constat sur un fichier absent du diff ne peut pas etre demontre.
-        absent = ("Fichiers absents du diff ci-dessous, tout constat a leur "
-                  "sujet est a rejeter :\n"
-                  + "".join(f"- {name} : {why}\n" for name, why in omitted)
-                  + "\n" if omitted else "")
+        absent = absent_block(omitted, "tout constat a leur sujet est a rejeter")
         try:
             payload, verifier, _ = checker.run(
                 VERIFY_PROMPT,
