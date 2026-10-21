@@ -421,8 +421,51 @@ def test_files_fallback() -> None:
     print("repli sur l'API des fichiers OK")
 
 
+def test_truncation() -> None:
+    blocks = a.split_diff(DIFF)
+    check("decoupe par fichier", [n for n, _ in blocks] == FILES, blocks)
+    check("decoupe exacte", "".join(b for _, b in blocks) == DIFF)
+    check("diff vide sans omission", a.fit_budget(a.split_diff(""), 1000)
+          == ("", []))
+    check("diff entier lu", a.fit_budget(blocks, len(DIFF)) == (DIFF, []))
+
+    second = DIFF.index("diff --git a/src/x.py")
+    reviewed, omitted = a.fit_budget(blocks, second + 10)
+    check("aucun fichier coupe", reviewed == DIFF[:second], reviewed)
+    check("fichier hors budget omis", [n for n, _ in omitted] == ["src/x.py"]
+          and "hors budget" in omitted[0][1], omitted)
+
+    gros = "diff --git a/preuves/gros.json b/preuves/gros.json\n+" + "x" * 500 + "\n"
+    reviewed, omitted = a.fit_budget(a.split_diff(gros + DIFF), len(DIFF) + 5)
+    check("gros fichier en tete omis, suivants relus",
+          reviewed == DIFF and [n for n, _ in omitted] == ["preuves/gros.json"],
+          omitted)
+
+    _, omitted = a.fit_budget(blocks, second + 10)
+    body = a.build_comment({}, FILES, "- rien", False, {}, [], [], 0, "r", "",
+                           None, omitted=omitted)
+    check("verdict partiel sur diff tronque",
+          "**APPROUVE (relecture partielle : 1 fichier(s) sur 2 lus)**" in body,
+          body)
+    check("cause annoncee", "depasse `max_diff_chars`" in body
+          and "GitHub refuse" not in body, body)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        msg = a.build_user_message(a.Config(Path(tmp)), {}, FILES, DIFF, "-")
+    check("aucune absence sans omission", "absent" not in msg, msg)
+
+    many = [(f"f{i}.bin", "patch absent") for i in range(a.OMITTED_SHOWN + 5)]
+    block = a.absent_block(many, "consigne")
+    check("liste des absents plafonnee", f"- f{a.OMITTED_SHOWN - 1}.bin" in block
+          and f"f{a.OMITTED_SHOWN}.bin" not in block
+          and f"({a.OMITTED_SHOWN + 5}), consigne" in block
+          and "- et 5 autre(s) : tout fichier qui n'apparait pas" in block, block)
+    print("troncature d'une PR ordinaire OK")
+
+
 def make_transport(calls: list, gemini, mistral, confirme_le: str = "",
-                   too_large: bool = False):
+                   too_large: bool = False, diff: str = DIFF,
+                   statuses: dict = STATUSES):
     def transport(method, url, headers, data=None, timeout=60):
         model = (data or {}).get("model", "")
         calls.append((method, url, model))
@@ -439,7 +482,7 @@ def make_transport(calls: list, gemini, mistral, confirme_le: str = "",
             handler = gemini if "googleapis" in url else mistral
             return handler(data, sent)
         if url.endswith("/pulls/42") and headers["Accept"].endswith("diff"):
-            return (406, TOO_LARGE, {}) if too_large else (200, DIFF, {})
+            return (406, TOO_LARGE, {}) if too_large else (200, diff, {})
         if url.endswith("/pulls/42"):
             return 200, json.dumps({"title": "Test", "body": None, "additions": 5,
                                     "deletions": 1, "user": {"login": "auteur"},
@@ -447,7 +490,7 @@ def make_transport(calls: list, gemini, mistral, confirme_le: str = "",
         if "/pulls/42/files" in url:
             return 200, json.dumps(FILE_ENTRIES if too_large else
                                    [{"filename": f, "status": s}
-                                    for f, s in STATUSES.items()]), {}
+                                    for f, s in statuses.items()]), {}
         if url.endswith("/commits/abcdef1234"):
             return 200, json.dumps(
                 {"commit": {"committer": {"date": HEAD_DATE}}}), {}
@@ -492,8 +535,14 @@ def test_end_to_end() -> None:
 
             # 1. Gemini relit, Mistral verifie et rejette un constat invente.
             calls: list = []
+            verify_sent: list = []
+
+            def verify_recorded(data, sent):
+                verify_sent.append(sent)
+                return json_reply(VERIFY_OK)(data, sent)
+
             a.http = make_transport(calls, json_reply(REVIEW_OK),
-                                    json_reply(VERIFY_OK))
+                                    verify_recorded)
             os.environ.pop("DRY_RUN", None)
             rc, out = run_main(tmp)
             check("code retour", rc == 0, rc)
@@ -509,6 +558,10 @@ def test_end_to_end() -> None:
                   any(m == "PATCH" for m, _, _ in calls))
             check("PR normale sans section d'omission",
                   "Fichiers non relus" not in out)
+            check("PR normale sans verdict partiel",
+                  "relecture partielle" not in out, out[:900])
+            check("verificateur sans liste d'absents", len(verify_sent) == 1
+                  and "Fichiers absents" not in verify_sent[0], verify_sent)
             print("relecture puis verification OK")
 
             # 1 bis. Diff refuse en 406 too_large : repli sur l'API des
@@ -522,7 +575,65 @@ def test_end_to_end() -> None:
             check("relecture menee", "constat reel" in out, out[:900])
             check("binaire annonce", "`preuves/scan.pdf` : patch absent" in out,
                   out[:1500])
+            check("verdict partiel annonce",
+                  "**A CORRIGER (relecture partielle : 2 fichier(s) sur 3 lus)**"
+                  in out, out[:1500])
+            check("fichiers lus comptes", "qui en a lu 2" in out, out[:1500])
             print("grosse PR en 406 OK")
+
+            # 1 ter. PR ordinaire au-dela de max_diff_chars : le gros fichier
+            #        en tete est omis sans etre coupe, les suivants sont relus,
+            #        les controles portent sur tout le diff.
+            (Path(tmp) / a.CONFIG_JSON).write_text(json.dumps(
+                {"forbid_em_dash": True, "max_diff_chars": 1000}),
+                encoding="utf-8")
+            gros = ("diff --git a/preuves/gros.md b/preuves/gros.md\n"
+                    "--- a/preuves/gros.md\n+++ b/preuves/gros.md\n"
+                    f"@@ -0,0 +1,2 @@\n+cadratin {a.DASH} hors relecture\n+"
+                    + "x" * 2000 + "\n")
+            sent_to_model: list = []
+
+            def recorded(payload):
+                def handler(data, sent):
+                    sent_to_model.append(sent)
+                    return json_reply(payload)(data, sent)
+                return handler
+
+            a.http = make_transport([], recorded(REVIEW_OK), recorded(VERIFY_OK),
+                                    diff=gros + DIFF,
+                                    statuses={"preuves/gros.md": "added",
+                                              **STATUSES})
+            rc, out = run_main(tmp)
+            (Path(tmp) / a.CONFIG_JSON).write_text(
+                json.dumps({"forbid_em_dash": True}), encoding="utf-8")
+            check("code retour sur diff tronque", rc == 0, rc)
+            check("controles sur tout le diff",
+                  "Cadratins ajoutes hors code : **4**" in out, out[:900])
+            check("gros fichier jamais envoye", len(sent_to_model) == 2
+                  and not any("hors relecture" in m or "xxxx" in m
+                              for m in sent_to_model), sent_to_model)
+            check("fichiers suivants envoyes entiers",
+                  all(DIFF in m for m in sent_to_model), sent_to_model)
+            check("absence signalee au relecteur",
+                  "Fichiers absents du diff ci-dessous (1), ne formule aucun "
+                  "constat a leur sujet :\n- preuves/gros.md : hors budget"
+                  in sent_to_model[0] and "- src/x.py :" not in sent_to_model[0],
+                  sent_to_model[0][-2600:-2000])
+            check("absence signalee au verificateur",
+                  "tout constat a leur sujet est a rejeter :\n"
+                  "- preuves/gros.md : hors budget" in sent_to_model[1]
+                  and "- src/x.py :" not in sent_to_model[1],
+                  sent_to_model[1][-2600:-2000])
+            check("relecture menee sur diff tronque", "constat reel" in out)
+            check("gros fichier annonce",
+                  "`preuves/gros.md` : hors budget de relecture" in out,
+                  out[:1500])
+            check("cause du diff tronque", "depasse `max_diff_chars`" in out
+                  and "GitHub refuse" not in out, out[:1500])
+            check("verdict partiel sur diff tronque",
+                  "**A CORRIGER (relecture partielle : 2 fichier(s) sur 3 lus)**"
+                  in out, out[:1500])
+            print("PR ordinaire tronquee OK")
 
             # 2. Le verificateur confirme tout : le verdict suit les constats.
             a.http = make_transport([], json_reply(REVIEW_OK), json_reply(
@@ -683,6 +794,7 @@ def main() -> int:
     test_config()
     test_providers()
     test_files_fallback()
+    test_truncation()
     test_end_to_end()
     print("\nTous les tests passent.")
     return 0

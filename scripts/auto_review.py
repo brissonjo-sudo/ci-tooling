@@ -111,7 +111,8 @@ RETRY_DELAYS = (5, 20)
 # d'ecrire la reponse : trop bas, ils rendent un message sans contenu.
 REVIEW_MAX_TOKENS = 4000
 DEFAULT_MAX_DIFF_CHARS = 80_000
-# Fichiers omis listes nommement dans le commentaire, le reste est compte.
+# Fichiers omis listes nommement dans le commentaire et dans les messages aux
+# modeles, le reste est compte.
 OMITTED_SHOWN = 30
 DASH = "—"  # tiret cadratin, en echappement pour rester reperable
 
@@ -365,6 +366,33 @@ def get_pr_files(repo: str, pr: int, token: str) -> list[dict]:
         page += 1
 
 
+def fit_budget(blocks: list[tuple[str, str]], budget: int
+               ) -> tuple[str, list[tuple[str, str]]]:
+    """Diff relu par le modele et fichiers omis avec leur motif.
+
+    Les blocs (fichier, diff du fichier) sont pris dans l'ordre jusqu'a budget
+    (max_diff_chars), sans jamais couper un fichier : un bloc qui ne tient plus
+    est omis et les suivants, plus petits, peuvent encore entrer. Un gros
+    fichier de preuves ne prive donc pas le code de relecture. Un bloc vide
+    est un patch absent.
+    """
+    reviewed: list[str] = []
+    omitted: list[tuple[str, str]] = []
+    size = 0
+    for name, block in blocks:
+        if not block:
+            omitted.append((name, "patch absent (binaire, renommage seul ou "
+                                  "fichier trop volumineux pour l'API)"))
+            continue
+        if size + len(block) > budget:
+            omitted.append((name, f"hors budget de relecture ({len(block)} "
+                                  "caracteres)"))
+            continue
+        reviewed.append(block)
+        size += len(block)
+    return "".join(reviewed), omitted
+
+
 def diff_from_files(entries: list[dict], budget: int
                     ) -> tuple[str, str, list[tuple[str, str]]]:
     """Reconstitue le diff depuis les patchs de l'API des fichiers.
@@ -372,32 +400,31 @@ def diff_from_files(entries: list[dict], budget: int
     Repli quand l'endpoint diff refuse la PR (406 too_large, au-dela de 300
     fichiers). Retourne (diff complet pour les controles deterministes, diff
     relu par le modele, fichiers omis de la relecture avec leur motif).
-
-    Le diff relu tient dans budget (max_diff_chars) et n'est jamais coupe au
-    milieu d'un fichier : un patch qui ne tient plus est omis et les suivants,
-    plus petits, peuvent encore entrer. Un gros fichier de preuves ne prive
-    donc pas le code de relecture.
     """
-    full: list[str] = []
-    reviewed: list[str] = []
-    omitted: list[tuple[str, str]] = []
-    size = 0
+    blocks = []
     for f in entries:
         name = str(f.get("filename") or "")
         patch = f.get("patch")
-        if not patch:
-            omitted.append((name, "patch absent (binaire, renommage seul ou "
-                                  "fichier trop volumineux pour l'API)"))
-            continue
-        block = f"diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n{patch}\n"
-        full.append(block)
-        if size + len(block) > budget:
-            omitted.append((name, f"hors budget de relecture ({len(block)} "
-                                  "caracteres)"))
-            continue
-        reviewed.append(block)
-        size += len(block)
-    return "".join(full), "".join(reviewed), omitted
+        blocks.append((name, f"diff --git a/{name} b/{name}\n--- a/{name}\n"
+                             f"+++ b/{name}\n{patch}\n" if patch else ""))
+    reviewed, omitted = fit_budget(blocks, budget)
+    return "".join(b for _, b in blocks), reviewed, omitted
+
+
+def split_diff(diff: str) -> list[tuple[str, str]]:
+    """Decoupe un diff unifie en blocs (fichier, diff du fichier) dont la
+    concatenation redonne le diff exact. Un preambule rejoint le premier bloc.
+    """
+    if not diff:
+        return []  # sinon un bloc vide passerait pour un patch absent
+    starts = [0] + [m.start() for m in re.finditer(r"^diff --git ", diff, re.M)
+                    if m.start() > 0]
+    blocks = []
+    for start, end in zip(starts, starts[1:] + [len(diff)]):
+        block = diff[start:end]
+        # shortcut: un chemin contenant " b/" est mal decoupe, rare.
+        blocks.append((block.split("\n", 1)[0].rsplit(" b/", 1)[-1], block))
+    return blocks
 
 
 def get_commit_date(repo: str, sha: str, token: str) -> str:
@@ -890,7 +917,8 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
                   verifier: str, error: str | None,
                   verify_state: str = "",
                   confirmation: dict | None = None,
-                  omitted: list[tuple[str, str]] | None = None) -> str:
+                  omitted: list[tuple[str, str]] | None = None,
+                  too_large: bool = False) -> str:
     head = pr.get("head", {}).get("sha", "")[:7]
     parts = [
         MARKER,
@@ -904,12 +932,19 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
     ]
     if omitted:
         shown = OMITTED_SHOWN
+        if too_large:
+            cause = ("GitHub refuse le diff complet de cette PR (plus de 300 "
+                     "fichiers ou diff trop volumineux) : la relecture repose "
+                     "sur les patchs de l'API des fichiers.")
+            reste = "ceux sans patch echappent aussi aux controles objectifs."
+        else:
+            cause = ("Le diff depasse `max_diff_chars` : le modele n'a recu "
+                     "que les fichiers entiers qui tiennent dans ce plafond.")
+            reste = "les controles objectifs portent sur tout le diff."
         parts += ["### Fichiers non relus",
-                  f"GitHub refuse le diff complet de cette PR (plus de 300 "
-                  f"fichiers ou diff trop volumineux) : la relecture repose sur "
-                  f"les patchs de l'API des fichiers. **{len(omitted)}** "
-                  f"fichier(s) n'ont pas ete lus par le modele ; ceux sans "
-                  f"patch echappent aussi aux controles objectifs.", ""]
+                  f"{cause} **{len(omitted)}** fichier(s) sur {len(files)} "
+                  f"n'ont pas ete lus par le modele, qui en a lu "
+                  f"{len(files) - len(omitted)} ; {reste}", ""]
         parts += [f"- `{name}` : {why}" for name, why in omitted[:shown]]
         if len(omitted) > shown:
             parts.append(f"- et {len(omitted) - shown} autre(s).")
@@ -924,8 +959,12 @@ def build_comment(pr: dict, files: list[str], checks: str, blocking: bool,
         return "\n".join(parts)
 
     leve = bool(confirmation and confirmation["valide"])
-    parts += ["### Verdict",
-              f"**{compute_verdict(findings, blocking and not leve)}**"]
+    verdict = compute_verdict(findings, blocking and not leve)
+    if omitted:
+        # Un APPROUVE sur 19 fichiers lus sur 345 ne doit pas passer pour entier.
+        verdict += (f" (relecture partielle : {len(files) - len(omitted)} "
+                    f"fichier(s) sur {len(files)} lus)")
+    parts += ["### Verdict", f"**{verdict}**"]
     summary = str(review.get("resume") or "").strip()
     if summary:
         parts.append(summary)
@@ -973,23 +1012,42 @@ def env(name: str, required: bool = True, default: str = "") -> str:
     return value
 
 
+def absent_block(omitted: list[tuple[str, str]] | None, consigne: str) -> str:
+    """Fichiers absents du diff envoye au modele, plafonnes a OMITTED_SHOWN.
+
+    Sans cette mention, le modele prend un fichier absent pour un fichier lu.
+    Au-dela du plafond, une regle generale remplace la liste.
+    """
+    if not omitted:
+        return ""
+    lines = [f"Fichiers absents du diff ci-dessous ({len(omitted)}), "
+             f"{consigne} :"]
+    lines += [f"- {name} : {why}" for name, why in omitted[:OMITTED_SHOWN]]
+    if len(omitted) > OMITTED_SHOWN:
+        lines.append(f"- et {len(omitted) - OMITTED_SHOWN} autre(s) : tout "
+                     "fichier qui n'apparait pas dans le diff ci-dessous en "
+                     "est absent.")
+    return "\n".join(lines) + "\n\n"
+
+
 def build_user_message(cfg: Config, pr: dict, files: list[str],
-                       diff: str, checks: str) -> str:
-    truncated = len(diff) > cfg.max_diff_chars
-    suffix = f" (tronque a {cfg.max_diff_chars} caracteres)" if truncated else ""
+                       diff: str, checks: str,
+                       omitted: list[tuple[str, str]] | None = None) -> str:
     return (
         f"Titre de la PR : {pr.get('title', '')}\n\n"
         f"Description :\n{pr.get('body') or '(vide)'}\n\n"
         f"Fichiers modifies ({len(files)}) :\n"
         + "\n".join(f"- {f}" for f in files)
-        + f"\n\nControles automatiques deja effectues :\n{checks}\n\n"
-          f"Diff{suffix} :\n```diff\n{diff[:cfg.max_diff_chars]}\n```"
+        + "\n\n" + absent_block(omitted, "ne formule aucun constat a leur sujet")
+        + f"Controles automatiques deja effectues :\n{checks}\n\n"
+          f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```"
     )
 
 
 def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
                         files: list[str], diff: str, checks_for_model: str,
-                        requested: str) -> dict:
+                        requested: str,
+                        omitted: list[tuple[str, str]] | None = None) -> dict:
     """Relit puis fait verifier. Retourne l'etat a publier."""
     out: dict[str, Any] = {"review": None, "findings": [], "rejected": [],
                            "dropped": 0, "reviewer": "", "verifier": "",
@@ -1000,7 +1058,7 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
         out["reviewer"] = "aucun appel necessaire"
         return out
 
-    user = build_user_message(cfg, pr, files, diff, checks_for_model)
+    user = build_user_message(cfg, pr, files, diff, checks_for_model, omitted)
     errors: list[str] = []
     for provider in providers:
         print(f"Relecture par {provider.name}...")
@@ -1035,10 +1093,13 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
     if findings and others:
         checker = others[0]
         print(f"Verification par {checker.name}...")
+        # Un constat sur un fichier absent du diff ne peut pas etre demontre.
+        absent = absent_block(omitted, "tout constat a leur sujet est a rejeter")
         try:
             payload, verifier, _ = checker.run(
                 VERIFY_PROMPT,
                 f"Constats a verifier :\n{numbered_findings(findings)}\n\n"
+                f"{absent}"
                 f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```")
         except Exception as e:  # noqa: BLE001
             payload, verifier = None, ""
@@ -1086,17 +1147,24 @@ def main() -> int:
     entries = get_pr_files(repo, pr_number, token)
     statuses = {str(f["filename"]): str(f.get("status") or "") for f in entries}
     files = list(statuses)
-    omitted: list[tuple[str, str]] = []
+    too_large = False
     try:
         diff = review_diff = get_pr_diff(repo, pr_number, token)
     except HttpError as e:
         if e.status != 406:
             raise
         # 406 too_large : au-dela de 300 fichiers, l'endpoint diff refuse.
+        too_large = True
         diff, review_diff, omitted = diff_from_files(entries,
                                                      cfg.max_diff_chars)
         print(f"Diff refuse par GitHub (406), reconstitue depuis l'API des "
               f"fichiers : {len(omitted)} fichier(s) omis de la relecture")
+    else:
+        # Meme mise en budget que le repli 406 : aucun fichier coupe.
+        review_diff, omitted = fit_budget(split_diff(diff), cfg.max_diff_chars)
+        if omitted:
+            print(f"Diff au-dela de {cfg.max_diff_chars} caracteres : "
+                  f"{len(omitted)} fichier(s) omis de la relecture")
     print(f"PR #{pr_number} sur {repo} : {len(files)} fichier(s), "
           f"diff de {len(diff)} caracteres")
 
@@ -1117,13 +1185,14 @@ def main() -> int:
             etat = "valide" if confirmation["valide"] else "anterieure au push"
             print(f"Controle bloquant, confirmation de @{author} : {etat}")
     state = review_pull_request(cfg, providers, pr, files, review_diff,
-                                checks_for_model, requested)
+                                checks_for_model, requested, omitted)
 
     comment = build_comment(pr, files, checks, blocking, state["review"],
                             state["findings"], state["rejected"],
                             state["dropped"], state["reviewer"],
                             state["verifier"], state["error"],
-                            state["verify_state"], confirmation, omitted)
+                            state["verify_state"], confirmation, omitted,
+                            too_large)
     print("=" * 60)
     print(comment)
     print("=" * 60)

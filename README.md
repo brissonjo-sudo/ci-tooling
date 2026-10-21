@@ -82,7 +82,7 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 | `immutable_files` | `[]` | Motifs de chemins qu'on ajoute mais qu'on ne modifie jamais. Un fichier **modifié** qui correspond bloque la fusion ; un fichier ajouté ne déclenche rien. |
 | `forbid_patterns` | `[]` | Expressions régulières interdites dans les lignes ajoutées. Voir ci-dessous. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md`. Contrôle purement déterministe : le modèle n'en est pas informé. |
-| `max_diff_chars` | `80000` | Taille du diff envoyée au modèle, au-delà il est tronqué. Sur une grosse PR, c'est aussi le plafond de la relecture, voir [Grosses pull requests](#grosses-pull-requests). |
+| `max_diff_chars` | `80000` | Plafond du diff envoyé au modèle. Au-delà, seuls les fichiers entiers qui tiennent sont relus et le verdict signale une relecture partielle, voir [Grosses pull requests](#grosses-pull-requests). |
 | `providers` | `["gemini", "mistral"]` | Ordre des fournisseurs. Le premier qui répond relit, le suivant vérifie. |
 | `model` | `""` | Modèle demandé en premier au relecteur. |
 | `rules` | `""` | Règles en ligne, alternative à `auto-review.md`. |
@@ -211,8 +211,8 @@ permet de les traiter avec le même code.
 Au-delà de 300 fichiers, ou pour un diff trop volumineux, GitHub refuse l'endpoint
 diff (`406`, code `too_large`). La relecture bascule alors sur l'API « List pull
 request files » (100 fichiers par page, 3000 au plus), qui rend un patch par
-fichier. Les PR ordinaires ne sont pas concernées : elles passent toujours par
-l'endpoint diff.
+fichier. Les PR ordinaires passent toujours par l'endpoint diff, voir
+[Diff tronqué](#diff-tronqué) pour celles qui dépassent `max_diff_chars`.
 
 - **Contrôles objectifs** : ils portent sur tous les patchs disponibles.
 - **Relecture par le modèle** : les patchs sont pris dans l'ordre jusqu'à
@@ -225,7 +225,32 @@ l'endpoint diff.
   protégés, immuables) les couvrent toujours.
 
 Le commentaire publié ajoute alors une section « Fichiers non relus » : le
-nombre de fichiers omis, puis les 30 premiers avec leur motif.
+nombre de fichiers omis et de fichiers lus, puis les 30 premiers omis avec leur
+motif.
+
+Le verdict le dit aussi : `APPROUVE (relecture partielle : 19 fichier(s) sur 345
+lus)`, de même pour `A CORRIGER` et `BLOQUE`. Sans cette mention, une PR dont le
+modèle n'a lu qu'une fraction affichait un `APPROUVE` sans réserve. Une PR
+lue en entier garde un verdict nu.
+
+Le modèle le sait aussi : le relecteur reçoit la liste des fichiers absents de
+son diff, avec leur motif et la consigne de ne formuler aucun constat à leur
+sujet. Sans elle, il pouvait prendre un fichier qu'il n'a pas vu pour un
+fichier sans problème. Le vérificateur reçoit la même liste, avec la consigne
+de rejeter tout constat qui porte sur l'un de ces fichiers. Comme dans le
+commentaire, la liste s'arrête aux 30 premiers fichiers : au-delà, elle donne
+le nombre restant et précise que tout fichier qui n'apparaît pas dans le diff
+en est absent.
+
+### Diff tronqué
+
+Une PR ordinaire dont le diff dépasse `max_diff_chars` n'est pas refusée par
+GitHub. Son diff est alors découpé par fichier et mis en budget comme dans le
+repli : les fichiers sont pris dans l'ordre jusqu'à `max_diff_chars`, aucun
+n'est coupé, et un fichier qui ne tient plus laisse entrer les suivants, plus
+petits. Les contrôles objectifs portent toujours sur tout le diff. Le
+commentaire publié ajoute la même section « Fichiers non relus » et le verdict
+porte la même mention de relecture partielle.
 
 ## Ce que la relecture ne fait pas
 
