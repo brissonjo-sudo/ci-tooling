@@ -244,6 +244,17 @@ def test_findings() -> None:
     check("ligne absente", kept[1]["ligne"] is None, kept[1])
     check("constats non liste", a.clean_findings(None, FILES) == ([], 0))
 
+    # Un chemin qui commence par un point reste tel quel.
+    dot_files = [".github/x.yml", "src/x.py"]
+    raw = [{"fichier": ".github/x.yml", "probleme": "dotfile"},
+           {"fichier": "./src/x.py", "probleme": "prefixe"},
+           {"fichier": "github/x.yml", "probleme": "hors PR"}]
+    with contextlib.redirect_stdout(io.StringIO()):
+        kept, dropped = a.clean_findings(raw, dot_files)
+    check("dotfile conserve",
+          [f["fichier"] for f in kept] == [".github/x.yml", "src/x.py"], kept)
+    check("hors PR toujours ecarte", dropped == 1, dropped)
+
     # Le verdict decoule des constats, il n'est pas demande au modele.
     check("approuve", a.compute_verdict([], False) == "APPROUVE")
     check("a corriger",
