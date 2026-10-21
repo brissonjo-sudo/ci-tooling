@@ -96,6 +96,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "base": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": ["gemini-3.8-flash", "gemini-3.5-flash-lite",
                    "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        # max_tokens inclut le raisonnement ; gemini-3.8-flash raisonne par
+        # defaut en "medium" et epuise probablement 4000 jetons sur un gros diff.
+        # "low" est accepte par tous les modeles de la liste.
+        "extra": {"reasoning_effort": "low"},
     },
     "mistral": {
         "env": "MISTRAL_API_KEY",
@@ -638,6 +642,7 @@ class Provider:
         self.api_key = api_key
         self.base = spec["base"]
         self.models: list[str] = list(spec["models"])
+        self.extra: dict[str, Any] = dict(spec.get("extra", {}))
 
     @property
     def headers(self) -> dict:
@@ -683,6 +688,7 @@ class Provider:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            **self.extra,
         }
         last = ""
         for attempt in range(len(RETRY_DELAYS) + 1):
@@ -693,9 +699,11 @@ class Provider:
                 # qui epuise son budget de jetons, ou dont la reponse est
                 # filtree, renvoie un message sans cle "content".
                 try:
-                    choice = (json.loads(body).get("choices") or [{}])[0]
+                    data = json.loads(body)
+                    choice = (data.get("choices") or [{}])[0]
+                    usage = data.get("usage")
                 except (ValueError, IndexError, AttributeError, TypeError):
-                    choice = {}
+                    choice, usage = {}, None
                 content = (choice.get("message") or {}).get("content") or ""
                 parsed = extract_json(content)
                 if parsed is not None:
@@ -703,6 +711,9 @@ class Provider:
                 reason = choice.get("finish_reason") or "non precisee"
                 last = (f"{model}: reponse inexploitable, JSON attendu "
                         f"(finish_reason={reason})")
+                if usage:
+                    # Montre la part du raisonnement dans un budget epuise.
+                    last += f" usage={json.dumps(usage)}"
                 print(f"  {last}", file=sys.stderr)
                 return None, last
             last = f"{model}: HTTP {status}: {body[:200]}"

@@ -206,6 +206,13 @@ Relevé en conditions réelles sur les paliers gratuits :
 Les deux fournisseurs exposent la même interface `/chat/completions`, ce qui
 permet de les traiter avec le même code.
 
+Les requêtes Gemini fixent `reasoning_effort` à `low`. Le plafond de 4000
+jetons de sortie inclut le raisonnement, et `gemini-3.8-flash` raisonne par
+défaut en `medium`. Sur un gros diff, il s'arrêtait avant d'écrire le JSON
+(`finish_reason=length`) et le repli prenait la relecture ; le raisonnement
+qui épuise le plafond en est la cause probable. Une réponse inexploitable
+affiche désormais l'objet `usage` renvoyé par l'API, pour le vérifier.
+
 ## Grosses pull requests
 
 Au-delà de 300 fichiers, ou pour un diff trop volumineux, GitHub refuse l'endpoint
