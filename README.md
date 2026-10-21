@@ -203,6 +203,11 @@ Relevé en conditions réelles sur les paliers gratuits :
 | Gemini | 250 000 tokens par minute, largement au-dessus d'un diff de PR |
 | Mistral | 20 000 tokens par minute sur `medium` et `small`, d'où des `429` fréquents ; `mistral-large` répond `403`, absent de l'offre gratuite |
 
+Quand la relecture est partielle, Mistral vérifie directement avec
+`ministral-14b-latest` : le message de vérification dépasse alors le plafond
+par minute de `mistral-medium-latest`, qui ne répond que `429`
+(collectivite-territoriale#17). Les autres PR gardent l'ordre habituel.
+
 Les deux fournisseurs exposent la même interface `/chat/completions`, ce qui
 permet de les traiter avec le même code.
 

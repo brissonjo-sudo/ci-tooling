@@ -106,6 +106,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "base": "https://api.mistral.ai/v1",
         "models": ["mistral-medium-latest", "ministral-14b-latest",
                    "mistral-small-latest", "ministral-8b-latest"],
+        # Verification d'une relecture partielle : le message depasse le
+        # plafond par minute de medium, qui ne repond que 429.
+        "large": "ministral-14b-latest",
     },
 }
 DEFAULT_PROVIDER_ORDER = ["gemini", "mistral"]
@@ -643,6 +646,7 @@ class Provider:
         self.base = spec["base"]
         self.models: list[str] = list(spec["models"])
         self.extra: dict[str, Any] = dict(spec.get("extra", {}))
+        self.large: str = spec.get("large", "")
 
     @property
     def headers(self) -> dict:
@@ -1112,7 +1116,8 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
                 VERIFY_PROMPT,
                 f"Constats a verifier :\n{numbered_findings(findings)}\n\n"
                 f"{absent}"
-                f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```")
+                f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```",
+                checker.large if omitted else "")
         except Exception as e:  # noqa: BLE001
             payload, verifier = None, ""
             print(f"  {type(e).__name__}: {e}", file=sys.stderr)

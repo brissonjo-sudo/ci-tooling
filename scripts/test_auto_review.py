@@ -611,6 +611,8 @@ def test_end_to_end() -> None:
                   "**A CORRIGER (relecture partielle : 2 fichier(s) sur 3 lus)**"
                   in out, out[:1500])
             check("fichiers lus comptes", "qui en a lu 2" in out, out[:1500])
+            check("verification directe par ministral-14b",
+                  "verifie par `mistral/ministral-14b-latest`" in out, out[-600:])
             print("grosse PR en 406 OK")
 
             # 1 ter. PR ordinaire au-dela de max_diff_chars : le gros fichier
