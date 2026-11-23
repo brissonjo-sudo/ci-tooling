@@ -7,8 +7,8 @@ Relecture automatique des pull requests, mutualisée pour tous les dépôts de
 puis mis à jour à chaque push. Il contient les contrôles objectifs configurés
 pour le dépôt et une relecture du diff.
 
-La relecture se fait à deux voix : **un modèle relit, un modèle d'un autre
-fournisseur vérifie**. Chaque constat doit citer une ligne ajoutée par le diff,
+La relecture se fait à deux voix : **un modèle Gemini relit, un autre modèle
+Gemini vérifie**. Chaque constat doit citer une ligne ajoutée par le diff,
 et le vérificateur n'a qu'une question à trancher, celle de savoir si le diff
 démontre ce constat. Ce qu'il rejette est replié dans un bloc dépliable plutôt
 que publié comme un problème.
@@ -17,12 +17,14 @@ que publié comme un problème.
 
 Deux gestes, une seule fois par dépôt.
 
-**1. Ajouter les clés.** Dans le dépôt à équiper, `Settings` → `Secrets and
-variables` → `Actions` → `New repository secret`. Deux secrets possibles,
-`GEMINI_API_KEY` et `MISTRAL_API_KEY`. Avec un seul, la relecture a lieu sans
-vérification croisée ; avec les deux, elle est vérifiée.
+**1. Ajouter la clé.** Dans le dépôt à équiper, `Settings` → `Secrets and
+variables` → `Actions` → `New repository secret`, secret `GEMINI_API_KEY`
+(clé Google AI Studio, offre gratuite suffisante).
 
-Un dépôt sans aucune clé n'échoue pas : le job sort en succès sans rien
+Mistral n'est plus utilisé par défaut. Un secret `MISTRAL_API_KEY` resté dans
+un dépôt est ignoré, sauf si `providers` nomme `mistral` (voir [Mistral](#mistral)).
+
+Un dépôt sans clé n'échoue pas : le job sort en succès sans rien
 publier, et la relecture démarre d'elle-même le jour où une clé est ajoutée.
 L'ordre des deux gestes est donc libre.
 
@@ -30,10 +32,10 @@ Le pied de chaque commentaire dit précisément ce qui s'est passé :
 
 | Mention | Signification |
 | --- | --- |
-| `vérifié par ...` | Le second fournisseur a tranché chaque constat. |
+| `vérifié par ...` | Le second modèle a tranché chaque constat. |
 | `aucun constat à vérifier` | La relecture n'a rien trouvé ; il n'y avait rien à soumettre au vérificateur. |
-| `un seul fournisseur configuré` | Une seule clé est présente. |
-| `vérification croisée indisponible` | Le second fournisseur n'a pas répondu ; les constats sont publiés tels quels. |
+| `aucun second modèle disponible` | Le fournisseur n'a pas de second modèle à proposer ; les constats sont publiés sans vérification. |
+| `vérification croisée indisponible` | Le vérificateur n'a pas répondu ; les constats sont publiés tels quels. |
 
 **2. Créer `.github/workflows/auto-review.yml`** avec exactement ceci :
 
@@ -83,7 +85,7 @@ de relecture. C'est le fichier qui change le plus la qualité du résultat.
 | `forbid_patterns` | `[]` | Expressions régulières interdites dans les lignes ajoutées. Voir ci-dessous. |
 | `forbid_em_dash` | `false` | Compte les tirets cadratins ajoutés hors blocs de code dans les `.md`. Contrôle purement déterministe : le modèle n'en est pas informé. |
 | `max_diff_chars` | `80000` | Plafond du diff envoyé au modèle. Au-delà, seuls les fichiers entiers qui tiennent sont relus et le verdict signale une relecture partielle, voir [Grosses pull requests](#grosses-pull-requests). |
-| `providers` | `["gemini", "mistral"]` | Ordre des fournisseurs. Le premier qui répond relit, le suivant vérifie. |
+| `providers` | `["gemini"]` | Ordre des fournisseurs. Le premier qui répond relit. Avec un seul, un autre de ses modèles vérifie ; avec plusieurs, le suivant vérifie. |
 | `model` | `""` | Modèle demandé en premier au relecteur. |
 | `rules` | `""` | Règles en ligne, alternative à `auto-review.md`. |
 | `rules_file` | `.github/auto-review.md` | Autre emplacement pour les règles. |
@@ -203,13 +205,34 @@ Relevé en conditions réelles sur les paliers gratuits :
 | Gemini | 250 000 tokens par minute, largement au-dessus d'un diff de PR |
 | Mistral | 20 000 tokens par minute sur `medium` et `small`, d'où des `429` fréquents ; `mistral-large` répond `403`, absent de l'offre gratuite |
 
-Quand la relecture est partielle, Mistral vérifie directement avec
-`ministral-14b-latest` : le message de vérification dépasse alors le plafond
-par minute de `mistral-medium-latest`, qui ne répond que `429`
-(collectivite-territoriale#17). Les autres PR gardent l'ordre habituel.
-
-Les deux fournisseurs exposent la même interface `/chat/completions`, ce qui
+Les fournisseurs exposent la même interface `/chat/completions`, ce qui
 permet de les traiter avec le même code.
+
+### Gemini seul
+
+Depuis le 1er décembre 2026, Gemini est le seul fournisseur appelé par défaut.
+Le relecteur est le premier modèle de la liste qui répond, le vérificateur le
+premier **autre** modèle de la liste (`gemini-3.5-flash-lite` quand
+`gemini-3.8-flash` a relu). Deux modèles d'une même famille se trompent plus
+souvent au même endroit que deux fournisseurs, d'où deux garde-fous qui
+restent : le filtre déterministe sur les fichiers absents du diff, et
+l'obligation de citer une ligne ajoutée. Le pied du commentaire nomme les deux
+modèles, pour que la vérification ne soit jamais présentée comme plus
+indépendante qu'elle ne l'est.
+
+### Mistral
+
+Mistral a retiré l'usage Vibe en outil tiers de l'allocation Vibe : à partir du
+1er décembre 2026, il se décompte de l'allocation d'API gratuite mensuelle, et
+l'offre gratuite n'en comprend plus. Sur un compte gratuit, la relecture par
+Mistral ne tient donc plus, et le projet ne l'appelle plus par défaut.
+
+Pour le réactiver sur un compte payant : ajouter le secret `MISTRAL_API_KEY` et
+déclarer `"providers": ["gemini", "mistral"]` dans `.github/auto-review.json`.
+Mistral vérifie alors, et directement avec `ministral-14b-latest` quand la
+relecture est partielle : le message de vérification dépasse le plafond par
+minute de `mistral-medium-latest`, qui ne répond que `429`
+(collectivite-territoriale#17).
 
 Les requêtes Gemini fixent `reasoning_effort` à `low`. Le plafond de 4000
 jetons de sortie inclut le raisonnement, et `gemini-3.8-flash` raisonne par
@@ -279,16 +302,16 @@ Trois garde-fous en découlent, du plus fiable au moins fiable.
    dans le commentaire publié.
 2. **Un constat visant un fichier absent de la PR est écarté sans discussion.**
    Filtre déterministe, aucun modèle n'intervient.
-3. **Un second fournisseur vérifie chaque constat restant.** Vérifier est plus
-   simple que relire, et deux fournisseurs indépendants ne se trompent pas au
-   même endroit.
+3. **Un second modèle vérifie chaque constat restant.** Vérifier est plus
+   simple que relire, et deux modèles ne se trompent pas toujours au même
+   endroit. Avec deux fournisseurs, l'indépendance est meilleure.
 
 Le verdict lui-même n'est plus demandé au modèle : il est calculé à partir des
 constats qui survivent. Un modèle avait rendu « À CORRIGER » alors qu'il
 n'énonçait qu'une question.
 
-Ces garde-fous fonctionnent. Sur la première pull request relue par le duo,
-Gemini a signalé une incohérence dans un fichier que la PR ne modifiait pas ;
+Ces garde-fous fonctionnent. Sur la première pull request relue par le duo
+Gemini et Mistral, Gemini a signalé une incohérence dans un fichier que la PR ne modifiait pas ;
 Mistral l'a rejetée en constatant que la preuve citée était introuvable dans les
 lignes ajoutées. Le commentaire publié annonçait « Aucun problème », le constat
 écarté restant consultable dans le bloc dépliable.

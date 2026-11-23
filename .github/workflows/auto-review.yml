@@ -28,14 +28,13 @@ on:
         required: false
         default: "main"
     secrets:
-      # Les deux sont facultatives, mais il en faut au moins une. Avec les
-      # deux, un fournisseur relit et l'autre verifie ; avec une seule, la
-      # relecture est publiee sans verification croisee.
+      # Gemini relit et un autre de ses modeles verifie. MISTRAL_API_KEY n'est
+      # lue que si "providers" nomme mistral dans .github/auto-review.json.
       GEMINI_API_KEY:
         description: "Cle API Google AI Studio. Le depot appelant passe secrets: inherit."
         required: false
       MISTRAL_API_KEY:
-        description: "Cle API Mistral. Le depot appelant passe secrets: inherit."
+        description: "Facultative, ignoree par defaut. Voir la cle providers du README."
         required: false
 
 jobs:
@@ -44,7 +43,7 @@ jobs:
     # "prete a relire", si le depot appelant ecoute ready_for_review.
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    # Pire cas : deux fournisseurs, plusieurs modeles avec retries (5 + 20 s)
+    # Pire cas : plusieurs modeles avec retries (5 + 20 s)
     # et appels de 120 s, plus la verification. Au-dela, quelque chose ne va pas.
     timeout-minutes: 15
     # Un seul run par PR : un nouveau push annule le precedent.
@@ -74,7 +73,7 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
 
-      - name: Relecture Mistral
+      - name: Relecture
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
