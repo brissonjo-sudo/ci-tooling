@@ -36,7 +36,7 @@ Configuration du depot appelant, toutes les cles etant facultatives :
                                                     "blocking": false}],
                                "forbid_em_dash": true,
                                "max_diff_chars": 80000,
-                               "providers": ["gemini", "mistral"],
+                               "providers": ["gemini"],
                                "model": "modele du relecteur"
                              }
 
@@ -49,16 +49,16 @@ Variables d'environnement :
   GITHUB_TOKEN        token du workflow, permission pull-requests: write
   GITHUB_REPOSITORY   owner/repo
   PR_NUMBER           numero de la PR
-  GEMINI_API_KEY      cle API Google AI Studio, facultative
-  MISTRAL_API_KEY     cle API Mistral, facultative
+  GEMINI_API_KEY      cle API Google AI Studio
+  MISTRAL_API_KEY     cle API Mistral, lue seulement si "providers" la nomme
   REVIEW_MODEL        modele du relecteur ; prioritaire sur la cle "model"
   CONFIG_DIR          racine du depot appelant, defaut le repertoire courant
   DRY_RUN=1           affiche le commentaire sans le poster
 
 Sans aucune cle, le script sort en succes sans rien publier : un depot equipe
-mais pas encore configure ne doit pas afficher d'echec. Avec une cle, la
-relecture est publiee telle quelle et le commentaire signale l'absence de
-verification. Avec deux, la verification croisee a lieu.
+mais pas encore configure ne doit pas afficher d'echec. Par defaut, Gemini
+relit et un autre de ses modeles verifie chaque constat. Avec un second
+fournisseur nomme dans "providers", c'est lui qui verifie.
 
 Aucune dependance hors bibliotheque standard.
 """
@@ -111,7 +111,11 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "large": "ministral-14b-latest",
     },
 }
-DEFAULT_PROVIDER_ORDER = ["gemini", "mistral"]
+# Gemini seul par defaut. Mistral reste declare pour qui le demande dans
+# "providers", mais n'est plus appele sans cela : depuis le 1er decembre 2026
+# l'offre gratuite n'inclut plus de quota d'API, et un secret MISTRAL_API_KEY
+# oublie ne doit pas declencher d'appel.
+DEFAULT_PROVIDER_ORDER = ["gemini"]
 
 RETRY_DELAYS = (5, 20)
 # Les modeles de raisonnement consomment leur budget de jetons avant
@@ -918,7 +922,7 @@ def render_findings(findings: list[dict]) -> list[str]:
 # verifier" pour "la verification n'a pas eu lieu".
 VERIFY_STATES = {
     "rien": "aucun constat a verifier",
-    "solo": "sans verification croisee, un seul fournisseur configure",
+    "solo": "sans verification, aucun second modele disponible",
     "echec": "verification croisee indisponible, constats publies tels quels",
 }
 
@@ -1108,6 +1112,15 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
 
     others = [p for p in providers
               if not str(out["reviewer"]).startswith(p.name + "/")]
+    check_model = ""
+    if not others:
+        # Fournisseur unique : un autre de ses modeles verifie, ce qui reste
+        # preferable a publier les constats sans second regard.
+        reviewer_name, _, reviewer_model = str(out["reviewer"]).partition("/")
+        for p in providers:
+            spare = [m for m in p.models if m != reviewer_model]
+            if p.name == reviewer_name and spare:
+                others, check_model = [p], spare[0]
     if not others:
         out["verify_state"] = "solo"
     elif not findings:
@@ -1124,7 +1137,7 @@ def review_pull_request(cfg: Config, providers: list[Provider], pr: dict,
                 f"Constats a verifier :\n{numbered_findings(findings)}\n\n"
                 f"{absent}"
                 f"Diff :\n```diff\n{diff[:cfg.max_diff_chars]}\n```",
-                checker.large if omitted else "")
+                (checker.large if omitted else "") or check_model)
         except Exception as e:  # noqa: BLE001
             payload, verifier = None, ""
             print(f"  {type(e).__name__}: {e}", file=sys.stderr)

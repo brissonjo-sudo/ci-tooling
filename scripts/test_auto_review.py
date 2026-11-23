@@ -294,6 +294,8 @@ def test_config() -> None:
         cfg = a.Config(root)
         check("ordre par defaut",
               cfg.provider_order == a.DEFAULT_PROVIDER_ORDER, cfg.provider_order)
+        check("gemini seul par defaut", cfg.provider_order == ["gemini"],
+              cfg.provider_order)
         check("aucun modele impose", cfg.model == "")
         checks, blocking, for_model = a.build_checks(cfg, DIFF, STATUSES)
         check("aucun controle", "Aucun controle objectif" in checks, checks)
@@ -563,7 +565,7 @@ def test_end_to_end() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / ".github").mkdir()
             (Path(tmp) / a.CONFIG_JSON).write_text(
-                json.dumps({"forbid_em_dash": True}), encoding="utf-8")
+                json.dumps({"forbid_em_dash": True, "providers": ["gemini", "mistral"]}), encoding="utf-8")
 
             # 1. Gemini relit, Mistral verifie et rejette un constat invente.
             calls: list = []
@@ -619,7 +621,7 @@ def test_end_to_end() -> None:
             #        en tete est omis sans etre coupe, les suivants sont relus,
             #        les controles portent sur tout le diff.
             (Path(tmp) / a.CONFIG_JSON).write_text(json.dumps(
-                {"forbid_em_dash": True, "max_diff_chars": 1000}),
+                {"forbid_em_dash": True, "max_diff_chars": 1000, "providers": ["gemini", "mistral"]}),
                 encoding="utf-8")
             gros = ("diff --git a/preuves/gros.md b/preuves/gros.md\n"
                     "--- a/preuves/gros.md\n+++ b/preuves/gros.md\n"
@@ -639,7 +641,7 @@ def test_end_to_end() -> None:
                                               **STATUSES})
             rc, out = run_main(tmp)
             (Path(tmp) / a.CONFIG_JSON).write_text(
-                json.dumps({"forbid_em_dash": True}), encoding="utf-8")
+                json.dumps({"forbid_em_dash": True, "providers": ["gemini", "mistral"]}), encoding="utf-8")
             check("code retour sur diff tronque", rc == 0, rc)
             check("controles sur tout le diff",
                   "Cadratins ajoutes hors code : **4**" in out, out[:900])
@@ -678,15 +680,42 @@ def test_end_to_end() -> None:
                   "constat reel" in out and "constat invente" in out)
             print("verificateur permissif OK")
 
-            # 3. Un seul fournisseur : pas de verification, c'est annonce.
+            # 3. Gemini seul (defaut) : un autre modele Gemini verifie.
+            solo_cfg = json.dumps({"forbid_em_dash": True})
+            (Path(tmp) / a.CONFIG_JSON).write_text(solo_cfg, encoding="utf-8")
             os.environ.pop("MISTRAL_API_KEY")
-            a.http = make_transport([], json_reply(REVIEW_OK), None)
+            solo_calls: list = []
+
+            def gemini_solo(data, sent):
+                if "Constats a verifier" in sent:
+                    return json_reply(VERIFY_OK)(data, sent)
+                return json_reply(REVIEW_OK)(data, sent)
+
+            a.http = make_transport(solo_calls, gemini_solo, None)
             rc, out = run_main(tmp)
             check("code retour", rc == 0, rc)
-            check("fournisseur unique annonce",
-                  "un seul fournisseur configure" in out, out[-500:])
+            check("relecteur gemini seul", "Relu par `gemini/gemini-3.8-flash`" in out,
+                  out[-500:])
+            check("autre modele gemini verifie",
+                  "verifie par `gemini/gemini-3.5-flash-lite`" in out, out[-500:])
+            check("constat invente ecarte en solo", "preuve introuvable" in out,
+                  out[-900:])
+            check("aucun appel mistral", not any(
+                "mistral" in u for _, u, _ in solo_calls), solo_calls)
+            print("gemini seul OK")
+
+            # 3 solo. Une cle Mistral oubliee dans les secrets n'est jamais appelee.
             os.environ["MISTRAL_API_KEY"] = "k-mistral"
-            print("fournisseur unique OK")
+            solo_calls = []
+            a.http = make_transport(solo_calls, gemini_solo, None)
+            rc, out = run_main(tmp)
+            check("cle mistral ignoree par defaut", rc == 0 and not any(
+                "mistral" in u for _, u, _ in solo_calls), solo_calls)
+            print("cle mistral ignoree OK")
+            (Path(tmp) / a.CONFIG_JSON).write_text(
+                json.dumps({"forbid_em_dash": True,
+                            "providers": ["gemini", "mistral"]}),
+                encoding="utf-8")
 
             # 3 bis. Deux fournisseurs mais aucun constat : le pied de page ne
             #        doit pas laisser croire que la verification a manque.

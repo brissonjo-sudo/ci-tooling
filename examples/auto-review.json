@@ -21,5 +21,5 @@
   ],
   "forbid_em_dash": false,
   "max_diff_chars": 80000,
-  "providers": ["gemini", "mistral"]
+  "providers": ["gemini"]
 }
